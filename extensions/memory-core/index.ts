@@ -1,3 +1,4 @@
+import { resolveMemoryDreamingPluginId } from "openclaw/plugin-sdk/memory-core-host-status";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { registerMemoryCli } from "./src/cli.js";
 import { registerDreamingCommand } from "./src/dreaming-command.js";
@@ -27,9 +28,14 @@ export default definePluginEntry({
   description: "File-backed memory search tools and CLI",
   kind: "memory",
   register(api) {
+    const memoryCoreOwnsSlot = resolveMemoryDreamingPluginId(api.config) === "memory-core";
+
     registerBuiltInMemoryEmbeddingProviders(api);
     registerShortTermPromotionDreaming(api);
     registerDreamingCommand(api);
+    if (!memoryCoreOwnsSlot) {
+      return;
+    }
     api.registerMemoryCapability({
       promptBuilder: buildPromptSection,
       flushPlanResolver: buildMemoryFlushPlan,

@@ -3094,6 +3094,74 @@ module.exports = {
         },
       },
       {
+        label:
+          "keeps bundled memory-core loaded as an auxiliary sidecar when another memory plugin owns the slot",
+        loadRegistry: () => {
+          const bundledDir = makeTempDir();
+          const memoryCoreDir = path.join(bundledDir, "memory-core");
+          const memoryBDir = path.join(bundledDir, "memory-b");
+          mkdirSafe(memoryCoreDir);
+          mkdirSafe(memoryBDir);
+          writePlugin({
+            id: "memory-core",
+            dir: memoryCoreDir,
+            filename: "index.cjs",
+            body: memoryPluginBody("memory-core"),
+          });
+          writePlugin({
+            id: "memory-b",
+            dir: memoryBDir,
+            filename: "index.cjs",
+            body: memoryPluginBody("memory-b"),
+          });
+          fs.writeFileSync(
+            path.join(memoryCoreDir, "openclaw.plugin.json"),
+            JSON.stringify(
+              {
+                id: "memory-core",
+                kind: "memory",
+                configSchema: EMPTY_PLUGIN_SCHEMA,
+                enabledByDefault: true,
+              },
+              null,
+              2,
+            ),
+            "utf-8",
+          );
+          fs.writeFileSync(
+            path.join(memoryBDir, "openclaw.plugin.json"),
+            JSON.stringify(
+              {
+                id: "memory-b",
+                kind: "memory",
+                configSchema: EMPTY_PLUGIN_SCHEMA,
+              },
+              null,
+              2,
+            ),
+            "utf-8",
+          );
+          process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = bundledDir;
+
+          return loadOpenClawPlugins({
+            cache: false,
+            config: {
+              plugins: {
+                slots: { memory: "memory-b" },
+              },
+            },
+          });
+        },
+        assert: (registry: ReturnType<typeof loadOpenClawPlugins>) => {
+          const memoryCore = registry.plugins.find((entry) => entry.id === "memory-core");
+          const memoryB = registry.plugins.find((entry) => entry.id === "memory-b");
+          expect(memoryCore?.status).toBe("loaded");
+          expect(memoryCore?.memorySlotSelected).not.toBe(true);
+          expect(memoryB?.status).toBe("loaded");
+          expect(memoryB?.memorySlotSelected).toBe(true);
+        },
+      },
+      {
         label: "disables memory plugins when slot is none",
         loadRegistry: () => {
           process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
@@ -3115,6 +3183,49 @@ module.exports = {
         assert: (registry: ReturnType<typeof loadOpenClawPlugins>) => {
           const entry = registry.plugins.find((item) => item.id === "memory-off");
           expect(entry?.status).toBe("disabled");
+        },
+      },
+      {
+        label: "does not keep bundled memory-core loaded when the memory slot is none",
+        loadRegistry: () => {
+          const bundledDir = makeTempDir();
+          const memoryCoreDir = path.join(bundledDir, "memory-core");
+          mkdirSafe(memoryCoreDir);
+          writePlugin({
+            id: "memory-core",
+            dir: memoryCoreDir,
+            filename: "index.cjs",
+            body: memoryPluginBody("memory-core"),
+          });
+          fs.writeFileSync(
+            path.join(memoryCoreDir, "openclaw.plugin.json"),
+            JSON.stringify(
+              {
+                id: "memory-core",
+                kind: "memory",
+                configSchema: EMPTY_PLUGIN_SCHEMA,
+                enabledByDefault: true,
+              },
+              null,
+              2,
+            ),
+            "utf-8",
+          );
+          process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = bundledDir;
+
+          return loadOpenClawPlugins({
+            cache: false,
+            config: {
+              plugins: {
+                slots: { memory: "none" },
+              },
+            },
+          });
+        },
+        assert: (registry: ReturnType<typeof loadOpenClawPlugins>) => {
+          const memoryCore = registry.plugins.find((entry) => entry.id === "memory-core");
+          expect(memoryCore?.status).toBe("disabled");
+          expect(String(memoryCore?.error ?? "")).toContain("memory slot disabled");
         },
       },
     ] as const;

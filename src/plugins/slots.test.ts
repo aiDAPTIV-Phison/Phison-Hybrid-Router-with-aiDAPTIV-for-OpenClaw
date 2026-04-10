@@ -127,17 +127,15 @@ describe("applyExclusiveSlotSelection", () => {
 
   it.each([
     {
-      name: "selects the slot and disables other entries for the same kind",
+      name: "switches the slot while keeping memory-core enabled as the dreaming sidecar",
       config: createMemoryConfig({
         slots: { memory: "memory-core" },
         entries: { "memory-core": { enabled: true } },
       }),
-      expectedDisabled: false,
+      expectedDisabled: true,
       warningChecks: {
-        contains: [
-          'Exclusive slot "memory" switched from "memory-core" to "memory".',
-          'Disabled other "memory" slot plugins: memory-core.',
-        ],
+        contains: ['Exclusive slot "memory" switched from "memory-core" to "memory".'],
+        excludes: ['Disabled other "memory" slot plugins: memory-core.'],
       },
     },
     {
@@ -215,7 +213,7 @@ describe("applyExclusiveSlotSelection", () => {
     expect(result.changed).toBe(true);
     expect(result.config.plugins?.slots?.memory).toBe("dual-plugin");
     expect(result.config.plugins?.slots?.contextEngine).toBe("dual-plugin");
-    expect(result.config.plugins?.entries?.["memory-core"]?.enabled).toBe(false);
+    expect(result.config.plugins?.entries?.["memory-core"]?.enabled).toBe(true);
     expect(result.config.plugins?.entries?.legacy?.enabled).toBe(false);
   });
 

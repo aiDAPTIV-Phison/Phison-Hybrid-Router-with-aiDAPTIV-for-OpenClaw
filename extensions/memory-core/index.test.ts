@@ -1,11 +1,12 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/memory-core";
-import { describe, expect, it } from "vitest";
+import type { OpenClawConfig, OpenClawPluginApi } from "openclaw/plugin-sdk/memory-core";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildMemoryFlushPlan,
   buildPromptSection,
   DEFAULT_MEMORY_FLUSH_FORCE_TRANSCRIPT_BYTES,
   DEFAULT_MEMORY_FLUSH_PROMPT,
   DEFAULT_MEMORY_FLUSH_SOFT_TOKENS,
+  default as memoryCorePlugin,
 } from "./index.js";
 
 describe("buildPromptSection", () => {
@@ -178,5 +179,41 @@ describe("buildMemoryFlushPlan", () => {
     expect(DEFAULT_MEMORY_FLUSH_PROMPT).toContain("do not overwrite");
     expect(DEFAULT_MEMORY_FLUSH_PROMPT).toContain("timestamped variant");
     expect(DEFAULT_MEMORY_FLUSH_PROMPT).toContain("YYYY-MM-DD.md");
+  });
+});
+
+describe("memory-core plugin registration", () => {
+  function createRegistrationHarness(config: OpenClawConfig = {}) {
+    const api = {
+      config,
+      registerMemoryEmbeddingProvider: vi.fn(),
+      registerCommand: vi.fn(),
+      registerHook: vi.fn(),
+      on: vi.fn(),
+      registerMemoryCapability: vi.fn(),
+      registerTool: vi.fn(),
+      registerCli: vi.fn(),
+    } as unknown as OpenClawPluginApi;
+
+    memoryCorePlugin.register(api);
+    return api;
+  }
+
+  it("keeps dreaming surfaces but skips exclusive memory registration when another memory plugin owns the slot", () => {
+    const api = createRegistrationHarness({
+      plugins: {
+        slots: {
+          memory: "memory-lancedb",
+        },
+      },
+    });
+
+    expect(api.registerCommand).toHaveBeenCalled();
+    expect(api.registerHook).toHaveBeenCalled();
+    expect(api.on).toHaveBeenCalled();
+    expect(api.registerMemoryEmbeddingProvider).toHaveBeenCalled();
+    expect(api.registerMemoryCapability).not.toHaveBeenCalled();
+    expect(api.registerTool).not.toHaveBeenCalled();
+    expect(api.registerCli).not.toHaveBeenCalled();
   });
 });

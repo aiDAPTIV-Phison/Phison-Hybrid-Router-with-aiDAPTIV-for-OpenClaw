@@ -75,7 +75,7 @@ import {
   resolvePluginSdkScopedAliasMap,
   shouldPreferNativeJiti,
 } from "./sdk-alias.js";
-import { hasKind, kindsEqual } from "./slots.js";
+import { hasKind, isBundledMemoryCoreDreamingSidecarCandidate, kindsEqual } from "./slots.js";
 import type {
   OpenClawPluginDefinition,
   OpenClawPluginModule,
@@ -1492,7 +1492,16 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
           slot: memorySlot,
           selectedId: selectedMemoryPluginId,
         });
-        if (!earlyMemoryDecision.enabled) {
+        if (
+          !earlyMemoryDecision.enabled &&
+          !isBundledMemoryCoreDreamingSidecarCandidate({
+            id: record.id,
+            kind: manifestRecord.kind,
+            origin: candidate.origin,
+            slot: memorySlot,
+            selectedId: selectedMemoryPluginId,
+          })
+        ) {
           record.enabled = false;
           record.status = "disabled";
           record.error = earlyMemoryDecision.reason;
@@ -1516,7 +1525,16 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
           selectedId: selectedMemoryPluginId,
         });
 
-        if (!memoryDecision.enabled) {
+        if (
+          !memoryDecision.enabled &&
+          !isBundledMemoryCoreDreamingSidecarCandidate({
+            id: record.id,
+            kind: record.kind,
+            origin: candidate.origin,
+            slot: memorySlot,
+            selectedId: selectedMemoryPluginId,
+          })
+        ) {
           record.enabled = false;
           record.status = "disabled";
           record.error = memoryDecision.reason;
@@ -1664,7 +1682,16 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
           selectedId: selectedMemoryPluginId,
         });
 
-        if (!memoryDecision.enabled) {
+        if (
+          !memoryDecision.enabled &&
+          !isBundledMemoryCoreDreamingSidecarCandidate({
+            id: record.id,
+            kind: record.kind,
+            origin: candidate.origin,
+            slot: memorySlot,
+            selectedId: selectedMemoryPluginId,
+          })
+        ) {
           record.enabled = false;
           record.status = "disabled";
           record.error = memoryDecision.reason;
@@ -2094,7 +2121,16 @@ export async function loadOpenClawPluginCliRegistry(
       slot: memorySlot,
       selectedId: selectedMemoryPluginId,
     });
-    if (!memoryDecision.enabled) {
+    if (
+      !memoryDecision.enabled &&
+      !isBundledMemoryCoreDreamingSidecarCandidate({
+        id: record.id,
+        kind: record.kind,
+        origin: candidate.origin,
+        slot: memorySlot,
+        selectedId: selectedMemoryPluginId,
+      })
+    ) {
       record.enabled = false;
       record.status = "disabled";
       record.error = memoryDecision.reason;

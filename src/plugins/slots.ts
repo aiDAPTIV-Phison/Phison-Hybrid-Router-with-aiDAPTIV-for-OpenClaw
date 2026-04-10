@@ -1,6 +1,6 @@
 import type { OpenClawConfig } from "../config/config.js";
 import type { PluginSlotsConfig } from "../config/types.plugins.js";
-import type { PluginKind } from "./types.js";
+import type { PluginKind, PluginOrigin } from "./types.js";
 
 export type PluginSlotKey = keyof PluginSlotsConfig;
 
@@ -67,6 +67,25 @@ export function defaultSlotIdForKey(slotKey: PluginSlotKey): string {
   return DEFAULT_SLOT_BY_KEY[slotKey];
 }
 
+export function isBundledMemoryCoreDreamingSidecarCandidate(params: {
+  id: string;
+  kind?: PluginKind | PluginKind[];
+  origin?: PluginOrigin;
+  slot?: string | null;
+  selectedId?: string | null;
+}): boolean {
+  const anotherPluginOwnsMemorySlot =
+    (typeof params.slot === "string" && params.slot !== "memory-core") ||
+    Boolean(params.selectedId && params.selectedId !== "memory-core");
+  return (
+    params.id === "memory-core" &&
+    (params.origin === undefined || params.origin === "bundled") &&
+    hasKind(params.kind, "memory") &&
+    params.slot !== null &&
+    anotherPluginOwnsMemorySlot
+  );
+}
+
 export type SlotSelectionResult = {
   config: OpenClawConfig;
   warnings: string[];
@@ -111,6 +130,15 @@ export function applyExclusiveSlotSelection(params: {
           (k) => SLOT_BY_KIND[k] === slotKey,
         );
         if (!kindForSlot || !hasKind(plugin.kind, kindForSlot)) {
+          continue;
+        }
+        if (
+          isBundledMemoryCoreDreamingSidecarCandidate({
+            ...plugin,
+            slot: params.selectedId,
+            selectedId: params.selectedId,
+          })
+        ) {
           continue;
         }
         // Don't disable a plugin that still owns another slot (explicit or default).
