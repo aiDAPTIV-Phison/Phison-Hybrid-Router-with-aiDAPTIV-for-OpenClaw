@@ -78,6 +78,7 @@ export type EmbeddedPiSubscribeState = {
   pendingMessagingMediaUrls: Map<string, string[]>;
   deterministicApprovalPromptSent: boolean;
   lastAssistant?: AgentMessage;
+  toolGeneratingIndices: Set<number>;
 };
 
 export type EmbeddedPiSubscribeContext = {

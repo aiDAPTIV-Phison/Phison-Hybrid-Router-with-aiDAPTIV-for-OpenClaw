@@ -79,6 +79,7 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     successfulCronAdds: 0,
     pendingMessagingMediaUrls: new Map(),
     deterministicApprovalPromptSent: false,
+    toolGeneratingIndices: new Set(),
   };
   const usageTotals = {
     input: 0,

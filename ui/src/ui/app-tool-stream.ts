@@ -1,4 +1,5 @@
 import { truncateText } from "./format.ts";
+import { resolveToolDisplay, formatToolDetail } from "./tool-display.ts";
 
 const TOOL_STREAM_LIMIT = 50;
 const TOOL_STREAM_THROTTLE_MS = 80;
@@ -405,6 +406,23 @@ export function handleAgentEvent(host: ToolStreamHost, payload?: AgentEventPaylo
     return;
   }
 
+  if (payload.stream === "tool_generating") {
+    const sk = typeof payload.sessionKey === "string" ? payload.sessionKey : undefined;
+    if (sk && sk !== host.sessionKey) {
+      return;
+    }
+    const genData = payload.data ?? {};
+    const genName = typeof genData.name === "string" ? genData.name : "tool";
+    const display = resolveToolDisplay({ name: genName });
+    const now = Date.now();
+    if (host.chatStream && host.chatStream.trim().length > 0 && !host.chatStream.startsWith("\u2699")) {
+      host.chatStreamSegments = [...host.chatStreamSegments, { text: host.chatStream, ts: now }];
+    }
+    host.chatStream = `\u2699\uFE0F ${display.label}...`;
+    host.chatStreamStartedAt = host.chatStreamStartedAt ?? now;
+    return;
+  }
+
   if (payload.stream !== "tool") {
     return;
   }
@@ -436,12 +454,16 @@ export function handleAgentEvent(host: ToolStreamHost, payload?: AgentEventPaylo
   let entry = host.toolStreamById.get(toolCallId);
   if (!entry) {
     // Commit any in-progress streaming text as a segment so it renders
-    // above the tool card instead of below it.
-    if (host.chatStream && host.chatStream.trim().length > 0) {
+    // above the tool card instead of below it.  Skip transient ⚙️ indicators.
+    if (host.chatStream && host.chatStream.trim().length > 0 && !host.chatStream.startsWith("\u2699")) {
       host.chatStreamSegments = [...host.chatStreamSegments, { text: host.chatStream, ts: now }];
-      host.chatStream = null;
-      host.chatStreamStartedAt = null;
     }
+    // Show a tool-calling indicator in the streaming bubble so the user
+    // can see which tool the model is invoking, even without thinking mode.
+    const display = resolveToolDisplay({ name, args });
+    const detail = formatToolDetail(display);
+    host.chatStream = detail ? `\u2699\uFE0F ${display.label}: ${detail}` : `\u2699\uFE0F ${display.label}`;
+    host.chatStreamStartedAt = host.chatStreamStartedAt ?? now;
     entry = {
       toolCallId,
       runId: payload.runId,
@@ -464,6 +486,11 @@ export function handleAgentEvent(host: ToolStreamHost, payload?: AgentEventPaylo
       entry.output = output || undefined;
     }
     entry.updatedAt = now;
+
+    if (phase === "result" && host.chatStream && host.chatStream.startsWith("\u2699")) {
+      host.chatStream = null;
+      host.chatStreamStartedAt = null;
+    }
   }
 
   entry.message = buildToolStreamMessage(entry);

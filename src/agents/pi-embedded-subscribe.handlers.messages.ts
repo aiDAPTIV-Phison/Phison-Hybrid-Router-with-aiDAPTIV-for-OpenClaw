@@ -126,6 +126,40 @@ export function handleMessageUpdate(
     return;
   }
 
+  if (evtType === "toolcall_delta" || evtType === "toolcall_start") {
+    const contentIndex =
+      typeof assistantRecord?.contentIndex === "number" ? assistantRecord.contentIndex : -1;
+    if (contentIndex >= 0 && !ctx.state.toolGeneratingIndices.has(contentIndex)) {
+      ctx.state.toolGeneratingIndices.add(contentIndex);
+      const partial = assistantRecord?.partial;
+      const partialContent =
+        partial && typeof partial === "object"
+          ? (partial as Record<string, unknown>).content
+          : undefined;
+      const toolItems = Array.isArray(partialContent) ? partialContent : [];
+      const toolBlock =
+        toolItems[contentIndex] ??
+        toolItems.find(
+          (c) =>
+            c &&
+            typeof c === "object" &&
+            ((c as Record<string, unknown>).type === "toolCall" ||
+              (c as Record<string, unknown>).type === "toolUse" ||
+              (c as Record<string, unknown>).type === "functionCall"),
+        );
+      const rawName =
+        toolBlock && typeof (toolBlock as Record<string, unknown>).name === "string"
+          ? ((toolBlock as Record<string, unknown>).name as string).trim()
+          : "";
+      emitAgentEvent({
+        runId: ctx.params.runId,
+        stream: "tool_generating",
+        data: { name: rawName || "tool" },
+      });
+    }
+    return;
+  }
+
   if (evtType !== "text_delta" && evtType !== "text_start" && evtType !== "text_end") {
     return;
   }
