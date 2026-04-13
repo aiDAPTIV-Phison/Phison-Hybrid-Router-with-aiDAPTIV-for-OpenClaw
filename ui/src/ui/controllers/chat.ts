@@ -1,31 +1,19 @@
-import { resetToolStream } from "../app-tool-stream.ts";
-import { extractText } from "../chat/message-extract.ts";
-import type { GatewayBrowserClient } from "../gateway.ts";
-import type { ChatAttachment } from "../ui-types.ts";
-import { generateUUID } from "../uuid.ts";
+import { extractText } from "../chat/message-extract";
+import type { GatewayBrowserClient } from "../gateway";
+import { generateUUID } from "../uuid";
+import type { ChatAttachment } from "../ui-types";
 
-const SILENT_REPLY_PATTERN = /^\s*NO_REPLY\s*$/;
+/** Kept when we append a final message from an event so loadChatHistory doesn't overwrite it. */
+export type LastAppendedFinalMessage = {
+  runId: string;
+  message: unknown;
+  at: number;
+};
 
-function isSilentReplyStream(text: string): boolean {
-  return SILENT_REPLY_PATTERN.test(text);
-}
-/** Client-side defense-in-depth: detect assistant messages whose text is purely NO_REPLY. */
-function isAssistantSilentReply(message: unknown): boolean {
-  if (!message || typeof message !== "object") {
-    return false;
-  }
-  const entry = message as Record<string, unknown>;
-  const role = typeof entry.role === "string" ? entry.role.toLowerCase() : "";
-  if (role !== "assistant") {
-    return false;
-  }
-  // entry.text takes precedence — matches gateway extractAssistantTextForSilentCheck
-  if (typeof entry.text === "string") {
-    return isSilentReplyStream(entry.text);
-  }
-  const text = extractText(message);
-  return typeof text === "string" && isSilentReplyStream(text);
-}
+export type ChatRoutingInfo = {
+  tier: string;
+  model: string;
+};
 
 export type ChatState = {
   client: GatewayBrowserClient | null;
@@ -39,52 +27,58 @@ export type ChatState = {
   chatAttachments: ChatAttachment[];
   chatRunId: string | null;
   chatStream: string | null;
+  chatReasoningStream: string | null;
+  chatRoutingInfo: ChatRoutingInfo | null;
   chatStreamStartedAt: number | null;
   lastError: string | null;
+  /** If set, loadChatHistory will merge this into the loaded list so compaction/API doesn't drop it. */
+  lastAppendedFinalMessage: LastAppendedFinalMessage | null;
 };
 
 export type ChatEventPayload = {
   runId: string;
   sessionKey: string;
-  state: "delta" | "final" | "aborted" | "error";
+  state: "delta" | "final" | "aborted" | "error" | "reasoning" | "routing";
   message?: unknown;
   errorMessage?: string;
+  reasoningText?: string;
+  routingTier?: string;
+  routingModel?: string;
 };
 
-function maybeResetToolStream(state: ChatState) {
-  const toolHost = state as ChatState & Partial<Parameters<typeof resetToolStream>[0]>;
-  if (
-    toolHost.toolStreamById instanceof Map &&
-    Array.isArray(toolHost.toolStreamOrder) &&
-    Array.isArray(toolHost.chatToolMessages) &&
-    Array.isArray(toolHost.chatStreamSegments)
-  ) {
-    resetToolStream(toolHost as Parameters<typeof resetToolStream>[0]);
-  }
+const LAST_APPENDED_FINAL_TTL_MS = 15_000;
+
+function lastMessageText(messages: unknown[]): string | null {
+  if (!Array.isArray(messages) || messages.length === 0) return null;
+  const last = messages[messages.length - 1] as Record<string, unknown> | undefined;
+  return last ? extractText(last) : null;
 }
 
 export async function loadChatHistory(state: ChatState) {
-  if (!state.client || !state.connected) {
-    return;
-  }
+  if (!state.client || !state.connected) return;
   state.chatLoading = true;
   state.lastError = null;
   try {
-    const res = await state.client.request<{ messages?: Array<unknown>; thinkingLevel?: string }>(
-      "chat.history",
-      {
-        sessionKey: state.sessionKey,
-        limit: 200,
-      },
-    );
-    const messages = Array.isArray(res.messages) ? res.messages : [];
-    state.chatMessages = messages.filter((message) => !isAssistantSilentReply(message));
+    const res = (await state.client.request("chat.history", {
+      sessionKey: state.sessionKey,
+      limit: 200,
+    })) as { messages?: unknown[]; thinkingLevel?: string | null };
+    let messages = Array.isArray(res.messages) ? res.messages : [];
+    const pending = state.lastAppendedFinalMessage;
+    if (pending && Date.now() - pending.at < LAST_APPENDED_FINAL_TTL_MS) {
+      const appendedText = extractText(pending.message);
+      const lastInLoaded = lastMessageText(messages);
+      if (
+        typeof appendedText === "string" &&
+        appendedText.trim() !== "" &&
+        appendedText.trim() !== lastInLoaded?.trim()
+      ) {
+        messages = [...messages, pending.message];
+      }
+      state.lastAppendedFinalMessage = null;
+    }
+    state.chatMessages = messages;
     state.chatThinkingLevel = res.thinkingLevel ?? null;
-    // Clear all streaming state — history includes tool results and text
-    // inline, so keeping streaming artifacts would cause duplicates.
-    maybeResetToolStream(state);
-    state.chatStream = null;
-    state.chatStreamStartedAt = null;
   } catch (err) {
     state.lastError = String(err);
   } finally {
@@ -94,59 +88,8 @@ export async function loadChatHistory(state: ChatState) {
 
 function dataUrlToBase64(dataUrl: string): { content: string; mimeType: string } | null {
   const match = /^data:([^;]+);base64,(.+)$/.exec(dataUrl);
-  if (!match) {
-    return null;
-  }
+  if (!match) return null;
   return { mimeType: match[1], content: match[2] };
-}
-
-type AssistantMessageNormalizationOptions = {
-  roleRequirement: "required" | "optional";
-  roleCaseSensitive?: boolean;
-  requireContentArray?: boolean;
-  allowTextField?: boolean;
-};
-
-function normalizeAssistantMessage(
-  message: unknown,
-  options: AssistantMessageNormalizationOptions,
-): Record<string, unknown> | null {
-  if (!message || typeof message !== "object") {
-    return null;
-  }
-  const candidate = message as Record<string, unknown>;
-  const roleValue = candidate.role;
-  if (typeof roleValue === "string") {
-    const role = options.roleCaseSensitive ? roleValue : roleValue.toLowerCase();
-    if (role !== "assistant") {
-      return null;
-    }
-  } else if (options.roleRequirement === "required") {
-    return null;
-  }
-
-  if (options.requireContentArray) {
-    return Array.isArray(candidate.content) ? candidate : null;
-  }
-  if (!("content" in candidate) && !(options.allowTextField && "text" in candidate)) {
-    return null;
-  }
-  return candidate;
-}
-
-function normalizeAbortedAssistantMessage(message: unknown): Record<string, unknown> | null {
-  return normalizeAssistantMessage(message, {
-    roleRequirement: "required",
-    roleCaseSensitive: true,
-    requireContentArray: true,
-  });
-}
-
-function normalizeFinalAssistantMessage(message: unknown): Record<string, unknown> | null {
-  return normalizeAssistantMessage(message, {
-    roleRequirement: "optional",
-    allowTextField: true,
-  });
 }
 
 export async function sendChatMessage(
@@ -154,14 +97,10 @@ export async function sendChatMessage(
   message: string,
   attachments?: ChatAttachment[],
 ): Promise<string | null> {
-  if (!state.client || !state.connected) {
-    return null;
-  }
+  if (!state.client || !state.connected) return null;
   const msg = message.trim();
   const hasAttachments = attachments && attachments.length > 0;
-  if (!msg && !hasAttachments) {
-    return null;
-  }
+  if (!msg && !hasAttachments) return null;
 
   const now = Date.now();
 
@@ -194,6 +133,8 @@ export async function sendChatMessage(
   const runId = generateUUID();
   state.chatRunId = runId;
   state.chatStream = "";
+  state.chatReasoningStream = null;
+  state.chatRoutingInfo = null;
   state.chatStreamStartedAt = now;
 
   // Convert attachments to API format
@@ -201,9 +142,7 @@ export async function sendChatMessage(
     ? attachments
         .map((att) => {
           const parsed = dataUrlToBase64(att.dataUrl);
-          if (!parsed) {
-            return null;
-          }
+          if (!parsed) return null;
           return {
             type: "image",
             mimeType: parsed.mimeType,
@@ -226,6 +165,8 @@ export async function sendChatMessage(
     const error = String(err);
     state.chatRunId = null;
     state.chatStream = null;
+    state.chatReasoningStream = null;
+    state.chatRoutingInfo = null;
     state.chatStreamStartedAt = null;
     state.lastError = error;
     state.chatMessages = [
@@ -243,9 +184,7 @@ export async function sendChatMessage(
 }
 
 export async function abortChatRun(state: ChatState): Promise<boolean> {
-  if (!state.client || !state.connected) {
-    return false;
-  }
+  if (!state.client || !state.connected) return false;
   const runId = state.chatRunId;
   try {
     await state.client.request(
@@ -260,74 +199,106 @@ export async function abortChatRun(state: ChatState): Promise<boolean> {
 }
 
 export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
-  if (!payload) {
-    return null;
-  }
-  if (payload.sessionKey !== state.sessionKey) {
-    return null;
-  }
+  if (!payload) return null;
+  if (payload.sessionKey !== state.sessionKey) return null;
 
-  // Final from another run (e.g. sub-agent announce): refresh history to show new message.
+  const isOtherRun =
+    payload.runId && state.chatRunId && payload.runId !== state.chatRunId;
+
+  // Final from another run (e.g. cron, sub-agent): show final message immediately and clear stream.
   // See https://github.com/openclaw/openclaw/issues/1909
-  if (payload.runId && state.chatRunId && payload.runId !== state.chatRunId) {
-    if (payload.state === "final") {
-      const finalMessage = normalizeFinalAssistantMessage(payload.message);
-      if (finalMessage && !isAssistantSilentReply(finalMessage)) {
-        state.chatMessages = [...state.chatMessages, finalMessage];
-        return null;
+  if (isOtherRun && payload.state === "final") {
+    const finalText = payload.message != null ? extractText(payload.message) : null;
+    const hasContent =
+      typeof finalText === "string" &&
+      finalText.trim() !== "" &&
+      finalText.trim() !== "NO_REPLY";
+    if (hasContent) {
+      state.chatStream = null;
+      state.chatReasoningStream = null;
+      state.chatRunId = null;
+      state.chatStreamStartedAt = null;
+      const msg = payload.message as Record<string, unknown> | undefined;
+      if (msg && typeof msg.role === "string" && msg.role.toLowerCase() === "assistant") {
+        const entry = {
+          ...msg,
+          timestamp: typeof msg.timestamp === "number" ? msg.timestamp : Date.now(),
+        };
+        state.chatMessages = [...state.chatMessages, entry];
+        state.lastAppendedFinalMessage = {
+          runId: payload.runId,
+          message: entry,
+          at: Date.now(),
+        };
       }
-      return "final";
     }
-    return null;
+    return "final";
   }
 
-  if (payload.state === "delta") {
+  // Delta/reasoning from another run (e.g. cron): show in current session and treat as that run's stream.
+  if (isOtherRun && (payload.state === "delta" || payload.state === "reasoning")) {
+    state.chatRunId = payload.runId;
+    state.chatStreamStartedAt = state.chatStreamStartedAt ?? Date.now();
+  }
+
+  if (payload.state === "routing") {
+    if (payload.routingTier && payload.routingModel) {
+      state.chatRoutingInfo = {
+        tier: payload.routingTier,
+        model: payload.routingModel,
+      };
+    }
+    return payload.state;
+  }
+
+  if (payload.state === "reasoning") {
+    if (payload.reasoningText) {
+      state.chatReasoningStream = payload.reasoningText;
+    }
+  } else if (payload.state === "delta") {
     const next = extractText(payload.message);
-    if (typeof next === "string" && !isSilentReplyStream(next)) {
+    if (typeof next === "string") {
       const current = state.chatStream ?? "";
-      if (!current || next.length >= current.length) {
+      // From another run (e.g. cron): replace stream so cron output is shown. Same run: append only.
+      if (isOtherRun) {
+        state.chatStream = next;
+      } else if (!current || next.length >= current.length) {
         state.chatStream = next;
       }
     }
   } else if (payload.state === "final") {
-    const finalMessage = normalizeFinalAssistantMessage(payload.message);
-    if (finalMessage && !isAssistantSilentReply(finalMessage)) {
-      state.chatMessages = [...state.chatMessages, finalMessage];
-    } else if (state.chatStream?.trim() && !isSilentReplyStream(state.chatStream)) {
-      state.chatMessages = [
-        ...state.chatMessages,
-        {
-          role: "assistant",
-          content: [{ type: "text", text: state.chatStream }],
-          timestamp: Date.now(),
-        },
-      ];
-    }
-    state.chatStream = null;
-    state.chatRunId = null;
-    state.chatStreamStartedAt = null;
-  } else if (payload.state === "aborted") {
-    const normalizedMessage = normalizeAbortedAssistantMessage(payload.message);
-    if (normalizedMessage && !isAssistantSilentReply(normalizedMessage)) {
-      state.chatMessages = [...state.chatMessages, normalizedMessage];
-    } else {
-      const streamedText = state.chatStream ?? "";
-      if (streamedText.trim() && !isSilentReplyStream(streamedText)) {
-        state.chatMessages = [
-          ...state.chatMessages,
-          {
-            role: "assistant",
-            content: [{ type: "text", text: streamedText }],
-            timestamp: Date.now(),
-          },
-        ];
+    const finalText = payload.message != null ? extractText(payload.message) : null;
+    const hasContent =
+      typeof finalText === "string" &&
+      finalText.trim() !== "" &&
+      finalText.trim() !== "NO_REPLY";
+    if (hasContent) {
+      const msg = payload.message as Record<string, unknown> | undefined;
+      if (msg && typeof msg.role === "string" && msg.role.toLowerCase() === "assistant") {
+        const entry = {
+          ...msg,
+          timestamp: typeof msg.timestamp === "number" ? msg.timestamp : Date.now(),
+        };
+        state.chatMessages = [...state.chatMessages, entry];
+        state.lastAppendedFinalMessage = {
+          runId: payload.runId,
+          message: entry,
+          at: Date.now(),
+        };
       }
     }
     state.chatStream = null;
+    state.chatReasoningStream = null;
+    state.chatRunId = null;
+    state.chatStreamStartedAt = null;
+  } else if (payload.state === "aborted") {
+    state.chatStream = null;
+    state.chatReasoningStream = null;
     state.chatRunId = null;
     state.chatStreamStartedAt = null;
   } else if (payload.state === "error") {
     state.chatStream = null;
+    state.chatReasoningStream = null;
     state.chatRunId = null;
     state.chatStreamStartedAt = null;
     state.lastError = payload.errorMessage ?? "chat error";

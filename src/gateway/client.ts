@@ -696,14 +696,20 @@ export class GatewayClient {
       );
     }
     const expectFinal = opts?.expectFinal === true;
+    const requestStart = performance.now();
     const p = new Promise<T>((resolve, reject) => {
       this.pending.set(id, {
-        resolve: (value) => resolve(value as T),
+        resolve: (value) => {
+          const elapsed = performance.now() - requestStart;
+          process.stderr.write(`[gateway-timing] request "${method}" round-trip: ${elapsed.toFixed(1)}ms\n`);
+          resolve(value as T);
+        },
         reject,
         expectFinal,
       });
     });
     this.ws.send(JSON.stringify(frame));
+    process.stderr.write(`[gateway-timing] ws.send "${method}" at ${requestStart.toFixed(1)}ms\n`);
     return p;
   }
 }

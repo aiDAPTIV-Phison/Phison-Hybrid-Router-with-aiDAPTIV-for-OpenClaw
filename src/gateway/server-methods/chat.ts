@@ -878,6 +878,9 @@ function nextChatSeq(context: { agentRunSeq: Map<string, number> }, runId: strin
   return next;
 }
 
+// Track last reasoning broadcast time per run for throttling
+const reasoningDeltaSentAt = new Map<string, number>();
+
 function broadcastChatFinal(params: {
   context: Pick<GatewayRequestContext, "broadcast" | "nodeSendToSession" | "agentRunSeq">;
   runId: string;
@@ -898,6 +901,77 @@ function broadcastChatFinal(params: {
   params.context.broadcast("chat", payload);
   params.context.nodeSendToSession(params.sessionKey, "chat", payload);
   params.context.agentRunSeq.delete(params.runId);
+}
+
+function broadcastChatReasoning(params: {
+  context: Pick<GatewayRequestContext, "broadcast" | "nodeSendToSession" | "agentRunSeq">;
+  runId: string;
+  sessionKey: string;
+  reasoningText: string;
+}) {
+  const now = Date.now();
+  const last = reasoningDeltaSentAt.get(params.runId) ?? 0;
+  // Throttle reasoning broadcasts to avoid flooding the client (150ms interval)
+  if (now - last < 150) {
+    return;
+  }
+  reasoningDeltaSentAt.set(params.runId, now);
+
+  // Normalize reasoning text: strip a leading "Reasoning:" label if present to
+  // avoid duplicate headings in the UI. The WebChat renderer already adds its
+  // own "Reasoning" label when formatting the markdown.
+  const cleanedText = (() => {
+    const raw = params.reasoningText ?? "";
+    const withoutLabel = raw.replace(/^Reasoning:\s*/i, "");
+    return withoutLabel.trimStart();
+  })();
+
+  const seq = nextChatSeq({ agentRunSeq: params.context.agentRunSeq }, params.runId);
+  const payload = {
+    runId: params.runId,
+    sessionKey: params.sessionKey,
+    seq,
+    state: "reasoning" as const,
+    reasoningText: cleanedText,
+  };
+  // forceSend so reasoning is not dropped when client buffer is full from agent/delta events
+  params.context.broadcast("chat", payload, { dropIfSlow: true, forceSend: true });
+  params.context.nodeSendToSession(params.sessionKey, "chat", payload);
+}
+
+type HybridGatewayDecision = { tier: string; provider: string; model: string; reason: string; ts: number };
+
+function consumeLastHybridGatewayDecision(): HybridGatewayDecision | undefined {
+  const g = globalThis as Record<string, unknown>;
+  const decision = g.__hybridGatewayLastDecision as HybridGatewayDecision | undefined;
+  if (!decision) return undefined;
+  // Only consume if fresh (within 30s)
+  if (Date.now() - decision.ts > 30_000) {
+    g.__hybridGatewayLastDecision = undefined;
+    return undefined;
+  }
+  g.__hybridGatewayLastDecision = undefined;
+  return decision;
+}
+
+function broadcastChatRoutingInfo(params: {
+  context: Pick<GatewayRequestContext, "broadcast" | "nodeSendToSession" | "agentRunSeq">;
+  runId: string;
+  sessionKey: string;
+  routingTier: string;
+  routingModel: string;
+}) {
+  const seq = nextChatSeq({ agentRunSeq: params.context.agentRunSeq }, params.runId);
+  const payload = {
+    runId: params.runId,
+    sessionKey: params.sessionKey,
+    seq,
+    state: "routing" as const,
+    routingTier: params.routingTier,
+    routingModel: params.routingModel,
+  };
+  params.context.broadcast("chat", payload, { forceSend: true });
+  params.context.nodeSendToSession(params.sessionKey, "chat", payload);
 }
 
 function broadcastChatError(params: {
@@ -1279,11 +1353,35 @@ export const chatHandlers: GatewayRequestHandlers = {
         sessionKey,
         config: cfg,
       });
-      const { onModelSelected, ...prefixOptions } = createReplyPrefixOptions({
+      const { onModelSelected: rawOnModelSelected, ...prefixOptions } = createReplyPrefixOptions({
         cfg,
         agentId,
         channel: INTERNAL_MESSAGE_CHANNEL,
       });
+
+      let routingBroadcasted = false;
+      const tryBroadcastRouting = (source: string) => {
+        if (routingBroadcasted) return;
+        const decision = consumeLastHybridGatewayDecision();
+        if (decision) {
+          routingBroadcasted = true;
+          context.logGateway.info(
+            `[hybrid-gw] broadcasting routing event (source=${source}): ${decision.tier} -> ${decision.provider}/${decision.model}`,
+          );
+          broadcastChatRoutingInfo({
+            context,
+            runId: clientRunId,
+            sessionKey: rawSessionKey,
+            routingTier: decision.tier === "gateway" ? "edge" : decision.tier,
+            routingModel: `${decision.provider}/${decision.model}`,
+          });
+        }
+      };
+
+      const onModelSelected: typeof rawOnModelSelected = (modelCtx) => {
+        rawOnModelSelected(modelCtx);
+        tryBroadcastRouting("onModelSelected");
+      };
       const finalReplyParts: string[] = [];
       const dispatcher = createReplyDispatcher({
         ...prefixOptions,
@@ -1311,8 +1409,14 @@ export const chatHandlers: GatewayRequestHandlers = {
           runId: clientRunId,
           abortSignal: abortController.signal,
           images: parsedImages.length > 0 ? parsedImages : undefined,
+          // Match WebChat behavior from openclaw_gtc: disable block streaming
+          // and explicitly request reasoning streaming so we can surface
+          // reasoning content as a dedicated chat event.
+          disableBlockStreaming: true,
+          reasoningLevel: "stream",
           onAgentRunStart: (runId) => {
             agentRunStarted = true;
+            tryBroadcastRouting("onAgentRunStart");
             const connId = typeof client?.connId === "string" ? client.connId : undefined;
             const wantsToolEvents = hasGatewayClientCap(
               client?.connect?.caps,
@@ -1331,6 +1435,16 @@ export const chatHandlers: GatewayRequestHandlers = {
             }
           },
           onModelSelected,
+          onReasoningStream: (payload) => {
+            tryBroadcastRouting("onReasoningStream");
+            if (!payload.text) return;
+            broadcastChatReasoning({
+              context,
+              runId: clientRunId,
+              sessionKey: rawSessionKey,
+              reasoningText: payload.text,
+            });
+          },
         },
       })
         .then(() => {
@@ -1412,8 +1526,24 @@ export const chatHandlers: GatewayRequestHandlers = {
           });
         })
         .finally(() => {
+          clearInterval(routingEarlyPollId);
           context.chatAbortControllers.delete(clientRunId);
         });
+
+      // Eagerly poll for hybrid-gateway routing decision so the UI badge
+      // appears right after classification finishes (~200-600ms), without
+      // waiting for the target model to establish its connection and start
+      // streaming (which can take seconds for cloud models).
+      const ROUTING_POLL_INTERVAL_MS = 50;
+      const ROUTING_POLL_MAX_MS = 10_000;
+      const routingEarlyPollId = setInterval(() => {
+        if (routingBroadcasted) {
+          clearInterval(routingEarlyPollId);
+          return;
+        }
+        tryBroadcastRouting("early-poll");
+      }, ROUTING_POLL_INTERVAL_MS);
+      setTimeout(() => clearInterval(routingEarlyPollId), ROUTING_POLL_MAX_MS);
     } catch (err) {
       const error = errorShape(ErrorCodes.UNAVAILABLE, String(err));
       const payload = {

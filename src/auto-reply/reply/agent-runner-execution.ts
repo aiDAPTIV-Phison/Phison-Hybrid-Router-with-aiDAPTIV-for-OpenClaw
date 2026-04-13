@@ -347,6 +347,7 @@ export async function runAgentTurnWithFallback(params: {
               suppressToolErrorWarnings: params.opts?.suppressToolErrorWarnings,
               bootstrapContextMode: params.opts?.bootstrapContextMode,
               bootstrapContextRunKind: params.opts?.isHeartbeat ? "heartbeat" : "default",
+
               images: params.opts?.images,
               abortSignal: params.opts?.abortSignal,
               blockReplyBreak: params.resolvedBlockStreamingBreak,

@@ -45,12 +45,13 @@ export function createEditorSubmitHandler(params: {
     addToHistory: (value: string) => void;
   };
   handleCommand: (value: string) => Promise<void> | void;
-  sendMessage: (value: string) => Promise<void> | void;
+  sendMessage: (value: string, inputTimestamp?: number) => Promise<void> | void;
   handleBangLine: (value: string) => Promise<void> | void;
 }) {
   return (text: string) => {
     const raw = text;
     const value = raw.trim();
+    const inputTimestamp = performance.now();
     params.editor.setText("");
 
     // Keep previous behavior: ignore empty/whitespace-only submissions.
@@ -75,7 +76,7 @@ export function createEditorSubmitHandler(params: {
       return;
     }
 
-    void params.sendMessage(value);
+    void params.sendMessage(value, inputTimestamp);
   };
 }
 

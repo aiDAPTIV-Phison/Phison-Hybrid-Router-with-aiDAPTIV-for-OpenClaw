@@ -494,7 +494,8 @@ export function createCommandHandlers(context: CommandHandlerContext) {
     tui.requestRender();
   };
 
-  const sendMessage = async (text: string) => {
+  const sendMessage = async (text: string, inputTimestamp?: number) => {
+    const t0 = inputTimestamp ?? performance.now();
     if (!state.isConnected) {
       chatLog.addSystem("not connected to gateway — message not sent");
       setActivityStatus("disconnected");
@@ -509,6 +510,7 @@ export function createCommandHandlers(context: CommandHandlerContext) {
       state.activeChatRunId = runId;
       setActivityStatus("sending");
       tui.requestRender();
+      const preSendChat = performance.now();
       await client.sendChat({
         sessionKey: state.currentSessionKey,
         message: text,
@@ -517,6 +519,12 @@ export function createCommandHandlers(context: CommandHandlerContext) {
         timeoutMs: opts.timeoutMs,
         runId,
       });
+      const now = performance.now();
+      process.stderr.write(
+        `[tui-timing] input→sendChat: ${(preSendChat - t0).toFixed(1)}ms | ` +
+        `sendChat→ack: ${(now - preSendChat).toFixed(1)}ms | ` +
+        `total: ${(now - t0).toFixed(1)}ms\n`,
+      );
       setActivityStatus("waiting");
       tui.requestRender();
     } catch (err) {
