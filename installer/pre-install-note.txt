@@ -1,0 +1,12 @@
+Before you continue, please ensure the following:
+
+1. Internet connection is available
+   This installer will download dependencies during setup.
+
+2. Git for Windows is recommended (optional)
+   Installing Git for Windows (https://git-scm.com) before running
+   this setup enables full build capabilities. If Git is not installed,
+   the setup will still complete successfully with core features.
+
+The installation process will take approximately 5-15 minutes
+depending on your network speed and hardware.
