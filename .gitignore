@@ -82,8 +82,9 @@ apps/ios/*.mobileprovision
 .local/
 docs/.local/
 tmp/
-IDENTITY.md
-USER.md
+# Root-only: allow docs/reference/templates copies to be tracked.
+/IDENTITY.md
+/USER.md
 .tgz
 .idea
 
@@ -119,6 +120,11 @@ dist/protocol.schema.json
 **/.classpath
 **/.settings/
 **/.gradle/
+
+# Installer build artifacts
+installer/build/
+installer/output/
+installer/.node-cache/
 
 # Synthing
 **/.stfolder/
