@@ -1,0 +1,134 @@
+{
+  "meta": {
+    "lastTouchedVersion": "2026.3.12",
+    "lastTouchedAt": "2026-04-01T06:33:56.921Z"
+  },
+  "wizard": {
+    "lastRunAt": "2026-04-01T05:40:13.849Z",
+    "lastRunVersion": "2026.3.12",
+    "lastRunCommand": "onboard",
+    "lastRunMode": "local"
+  },
+  "auth": {
+    "profiles": {
+      "openrouter:default": {
+        "provider": "openrouter",
+        "mode": "api_key"
+      }
+    }
+  },
+  "models": {
+    "providers": {
+      "openrouter": {
+        "baseUrl": "https://openrouter.ai/api/v1",
+        "apiKey": "",
+        "models": []
+      },
+      "llamacpp": {
+        "baseUrl": "http://127.0.0.1:13142/v1",
+        "api": "openai-completions",
+        "apiKey": "empty",
+        "models": []
+      },
+      "llamacpp-large": {
+        "baseUrl": "http://127.0.0.1:13141/v1",
+        "api": "openai-completions",
+        "apiKey": "empty",
+        "models": []
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "llamacpp/qwen2.5-3b-instruct-q4_k_m"
+      },
+      "models": {
+        "llamacpp/qwen2.5-3b-instruct-q4_k_m": {}
+      },
+      "workspace": "C:\\Users\\user\\.openclaw\\workspace",
+      "compaction": {
+        "mode": "safeguard"
+      }
+    }
+  },
+  "tools": {
+    "profile": "coding"
+  },
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw"
+  },
+  "session": {
+    "dmScope": "per-channel-peer"
+  },
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "loopback",
+    "auth": {
+      "mode": "token",
+      "token": "6bb13ce28c53fc868e28a9518f07951199717fb3fa4fc7d1"
+    },
+    "tailscale": {
+      "mode": "off",
+      "resetOnExit": false
+    },
+    "nodes": {
+      "denyCommands": [
+        "camera.snap",
+        "camera.clip",
+        "screen.record",
+        "contacts.add",
+        "calendar.add",
+        "reminders.add",
+        "sms.send"
+      ]
+    }
+  },
+  "plugins": {
+    "entries": {
+      "hybrid-gateway": {
+        "enabled": true,
+        "config": {
+          "classifier": {
+            "mode": "model",
+            "baseUrl": "http://127.0.0.1:13142/v1",
+            "apiKey": "empty",
+            "model": "qwen2.5-3b-instruct-q4_k_m",
+            "maxLatencyMs": 30000,
+            "cacheEnabled": true,
+            "cacheTtlSeconds": 300
+          },
+          "routing": {
+            "policy": "cost-optimize",
+            "skillRoutes": [
+              {
+                "skillPattern": "image-gen",
+                "forceTier": "cloud",
+                "reason": "Image generation requires cloud model with multimodal capabilities"
+              }
+            ],
+            "fallbackEnabled": true
+          },
+          "models": {
+            "gateway": {
+              "provider": "llamacpp",
+              "model": "qwen2.5-3b-instruct-q4_k_m"
+            },
+            "edge": {
+              "provider": "llamacpp-large",
+              "model": "gpt-oss-120b-Q4_K_M"
+            },
+            "cloud": {
+              "provider": "openrouter",
+              "model": "google/gemini-2.5-flash"
+            }
+          }
+        }
+      }
+    }
+  }
+}

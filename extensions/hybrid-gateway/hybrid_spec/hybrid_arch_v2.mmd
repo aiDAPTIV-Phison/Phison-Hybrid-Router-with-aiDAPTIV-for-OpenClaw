@@ -1,0 +1,42 @@
+flowchart TD
+
+    subgraph OC_TOP["Original OpenClaw"]
+        USER["User Chat Input"]
+        ORIG["Original Main Model<br/>llamacpp / gpt-oss-120b"]
+    end
+
+    subgraph GW["Hybrid Gateway Plugin"]
+        CLASSIFY["CLASSIFY"]
+        SMALL["Classifier / Gateway Model<br/>qwen2.5-3b<br/>(also serves as execution model for tier=gateway)"]
+        CLR["分類結果：{ complexity, skills }"]
+        ROUTE["ROUTE"]
+        SKR{"Skill Route<br/>Override?"}
+        POLICY["Three-Tier Policy"]
+        TIER{"Complexity<br/>Routing"}
+
+        CLASSIFY --> SMALL
+        SMALL --> CLR
+        CLR --> ROUTE
+        ROUTE --> SKR
+        SKR -->|No| POLICY
+        POLICY --> TIER
+    end
+
+    subgraph OC_BOT["Execution Layer"]
+        EXECUTE["EXECUTE<br/>⚠️ 主模型入口被替換"]
+        GW_MODEL["Gateway Model (tier=gateway)<br/>llamacpp / qwen2.5-3b<br/>complexity 0,1,2"]
+        EDGE["Edge Model (tier=edge)<br/>llamacpp / gpt-oss-120b<br/>complexity 3"]
+        CLOUD["Cloud Model (tier=cloud)<br/>google / gemini-2.5-flash<br/>complexity 4"]
+
+        EXECUTE --> GW_MODEL
+        EXECUTE --> EDGE
+        EXECUTE --> CLOUD
+    end
+
+    USER -->|"❌ 原本直接呼叫"| ORIG
+    USER -->|"✅ Gateway 攔截"| CLASSIFY
+    ORIG -. "被 Gateway 覆蓋" .-> EXECUTE
+    TIER -->|"0,1,2 → gateway"| EXECUTE
+    TIER -->|"3 → edge"| EXECUTE
+    TIER -->|"4 → cloud"| EXECUTE
+    SKR -->|Yes| EXECUTE

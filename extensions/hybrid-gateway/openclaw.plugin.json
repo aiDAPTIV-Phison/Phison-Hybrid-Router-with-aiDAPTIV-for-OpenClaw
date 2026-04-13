@@ -1,0 +1,70 @@
+{
+  "id": "hybrid-gateway",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "classifier": {
+        "type": "object",
+        "properties": {
+          "mode": { "type": "string", "enum": ["model", "heuristic"] },
+          "baseUrl": { "type": "string" },
+          "apiKey": { "type": "string" },
+          "model": { "type": "string" },
+          "maxLatencyMs": { "type": "number" },
+          "cacheEnabled": { "type": "boolean" },
+          "cacheTtlSeconds": { "type": "number" }
+        }
+      },
+      "routing": {
+        "type": "object",
+        "properties": {
+          "policy": { "type": "string", "enum": ["edge-first", "cloud-first", "cost-optimize", "quality-first"] },
+          "skillRoutes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "skillPattern": { "type": "string" },
+                "forceTier": { "type": "string", "enum": ["gateway", "edge", "cloud"] },
+                "preferModel": { "type": "string" },
+                "reason": { "type": "string" }
+              },
+              "required": ["skillPattern"]
+            }
+          },
+          "fallbackEnabled": { "type": "boolean" }
+        }
+      },
+      "models": {
+        "type": "object",
+        "properties": {
+          "gateway": {
+            "type": "object",
+            "properties": {
+              "provider": { "type": "string" },
+              "model": { "type": "string" }
+            },
+            "required": ["provider", "model"]
+          },
+          "edge": {
+            "type": "object",
+            "properties": {
+              "provider": { "type": "string" },
+              "model": { "type": "string" }
+            },
+            "required": ["provider", "model"]
+          },
+          "cloud": {
+            "type": "object",
+            "properties": {
+              "provider": { "type": "string" },
+              "model": { "type": "string" }
+            },
+            "required": ["provider", "model"]
+          }
+        }
+      }
+    }
+  }
+}

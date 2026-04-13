@@ -1,0 +1,149 @@
+import OpenAI from "openai";
+import { CLASSIFIER_SYSTEM_PROMPT } from "./classifier-prompt.js";
+import { heuristicClassify } from "./heuristic.js";
+import { COMPLEXITY_LEVELS, type ClassifyResult, type ComplexityLevel, type Skill } from "./types.js";
+
+// ---- Cache ----
+
+type CacheEntry = { result: ClassifyResult; expiresAt: number };
+
+function createCache() {
+  const store = new Map<string, CacheEntry>();
+
+  function get(key: string): ClassifyResult | null {
+    const entry = store.get(key);
+    if (!entry) return null;
+    if (Date.now() > entry.expiresAt) {
+      store.delete(key);
+      return null;
+    }
+    return entry.result;
+  }
+
+  function set(key: string, result: ClassifyResult, ttlSeconds: number) {
+    store.set(key, { result, expiresAt: Date.now() + ttlSeconds * 1000 });
+  }
+
+  return { get, set };
+}
+
+// ---- JSON parsing ----
+
+const VALID_SKILLS = new Set<string>([
+  "coding", "math", "creative", "analysis", "translation",
+  "search", "tool-use", "image-gen", "conversation", "summarization", "reasoning",
+]);
+
+function parseClassifyJson(raw: string): ClassifyResult | null {
+  try {
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return null;
+
+    const obj = JSON.parse(jsonMatch[0]);
+
+    const complexity: ComplexityLevel =
+      COMPLEXITY_LEVELS.includes(obj.complexity) ? obj.complexity : "moderate";
+
+    const skills: Skill[] = Array.isArray(obj.skills)
+      ? obj.skills.filter((s: unknown) => typeof s === "string" && VALID_SKILLS.has(s as string))
+      : [];
+
+    if (skills.length === 0) skills.push("conversation");
+
+    return { complexity, skills };
+  } catch {
+    return null;
+  }
+}
+
+// ---- Classifier ----
+
+export type ClassifierOptions = {
+  mode: "model" | "heuristic";
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  maxLatencyMs: number;
+  cacheEnabled: boolean;
+  cacheTtlSeconds: number;
+  logger?: { info: (msg: string) => void; warn: (msg: string) => void };
+};
+
+export function createClassifier(opts: ClassifierOptions) {
+  const cache = createCache();
+  const log = opts.logger ?? { info: () => {}, warn: () => {} };
+
+  const client = new OpenAI({
+    baseURL: opts.baseUrl,
+    apiKey: opts.apiKey,
+  });
+
+  async function classify(input: string): Promise<ClassifyResult> {
+    if (opts.mode === "heuristic") {
+      return heuristicClassify(input);
+    }
+
+    // L1: Cache
+    if (opts.cacheEnabled) {
+      const cached = cache.get(input);
+      if (cached) {
+        log.info(`[hybrid-gw] cache hit for classify`);
+        return cached;
+      }
+    }
+
+    // L2: Model classification
+    const inputPreview = input.length > 200 ? input.slice(0, 200) + "..." : input;
+    log.info(`[hybrid-gw] classifier input (${input.length} chars): ${inputPreview}`);
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(
+        () => controller.abort(),
+        opts.maxLatencyMs,
+      );
+
+      const response = await client.chat.completions.create(
+        {
+          model: opts.model,
+          messages: [
+            { role: "system", content: CLASSIFIER_SYSTEM_PROMPT },
+            { role: "user", content: input },
+          ],
+          max_tokens: 200,
+          temperature: 0.1,
+        },
+        { signal: controller.signal },
+      );
+
+      clearTimeout(timeout);
+
+      const content = response.choices?.[0]?.message?.content ?? "";
+      log.info(`[hybrid-gw] classifier raw response: ${content}`);
+
+      const parsed = parseClassifyJson(content);
+
+      if (parsed) {
+        if (opts.cacheEnabled) {
+          cache.set(input, parsed, opts.cacheTtlSeconds);
+        }
+        log.info(
+          `[hybrid-gw] classified: complexity=${parsed.complexity} skills=[${parsed.skills}]`,
+        );
+        return parsed;
+      }
+
+      log.warn(`[hybrid-gw] model returned unparseable JSON, falling back to heuristic`);
+    } catch (err) {
+      log.warn(
+        `[hybrid-gw] classifier model call failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    // L3: Heuristic fallback
+    const fallback = heuristicClassify(input);
+    log.info(`[hybrid-gw] heuristic fallback: complexity=${fallback.complexity}`);
+    return fallback;
+  }
+
+  return { classify };
+}

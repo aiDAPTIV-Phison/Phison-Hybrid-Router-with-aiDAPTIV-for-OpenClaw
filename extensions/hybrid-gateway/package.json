@@ -1,0 +1,15 @@
+{
+  "name": "@openclaw/hybrid-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Hybrid Gateway plugin — routes requests between local (edge) and cloud models based on complexity classification",
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "dependencies": {
+    "openai": "^4.80.0"
+  }
+}
