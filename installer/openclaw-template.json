@@ -100,7 +100,9 @@
             "model": "qwen2.5-3b-instruct-q4_k_m",
             "maxLatencyMs": 30000,
             "cacheEnabled": true,
-            "cacheTtlSeconds": 300
+            "cacheTtlSeconds": 300,
+            "disableThinking": true,
+            "thinkingStrategy": "auto"
           },
           "routing": {
             "policy": "cost-optimize",

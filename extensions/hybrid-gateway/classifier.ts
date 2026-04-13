@@ -1,7 +1,7 @@
 import OpenAI from "openai";
-import { CLASSIFIER_SYSTEM_PROMPT } from "./classifier-prompt.js";
+import { CLASSIFIER_SYSTEM_PROMPT, NO_THINKING_SUFFIX } from "./classifier-prompt.js";
 import { heuristicClassify } from "./heuristic.js";
-import { COMPLEXITY_LEVELS, type ClassifyResult, type ComplexityLevel, type Skill } from "./types.js";
+import { COMPLEXITY_LEVELS, type ClassifyResult, type ComplexityLevel, type Skill, type ThinkingStrategy } from "./types.js";
 
 // ---- Cache ----
 
@@ -56,6 +56,30 @@ function parseClassifyJson(raw: string): ClassifyResult | null {
   }
 }
 
+// ---- No-thinking prompt builders ----
+
+/**
+ * Gemma 4 26B/31B raw prompt without <|think|>.
+ * The empty thought channel suppresses "ghost" thinking.
+ */
+function buildGemma4NoThinkPrompt(systemContent: string, userContent: string): string {
+  return (
+    `<|turn>system\n${systemContent}<turn|>\n` +
+    `<|turn>user\n${userContent}<turn|>\n` +
+    `<|turn>model\n` +
+    `<|channel>thought\n<channel|>`
+  );
+}
+
+function isGemma4Model(model: string): boolean {
+  return /gemma[-_]?4/i.test(model);
+}
+
+function resolveStrategy(model: string, strategy?: ThinkingStrategy): ThinkingStrategy {
+  if (strategy && strategy !== "auto") return strategy;
+  return isGemma4Model(model) ? "gemma4-raw" : "qwen-nothink";
+}
+
 // ---- Classifier ----
 
 export type ClassifierOptions = {
@@ -66,6 +90,8 @@ export type ClassifierOptions = {
   maxLatencyMs: number;
   cacheEnabled: boolean;
   cacheTtlSeconds: number;
+  disableThinking?: boolean;
+  thinkingStrategy?: ThinkingStrategy;
   logger?: { info: (msg: string) => void; warn: (msg: string) => void };
 };
 
@@ -102,22 +128,63 @@ export function createClassifier(opts: ClassifierOptions) {
         opts.maxLatencyMs,
       );
 
-      const response = await client.chat.completions.create(
-        {
-          model: opts.model,
-          messages: [
-            { role: "system", content: CLASSIFIER_SYSTEM_PROMPT },
-            { role: "user", content: input },
-          ],
-          max_tokens: 200,
-          temperature: 0.1,
-        },
-        { signal: controller.signal },
-      );
+      let content: string;
+
+      if (opts.disableThinking) {
+        const strategy = resolveStrategy(opts.model, opts.thinkingStrategy);
+        log.info(`[hybrid-gw] thinking disabled, strategy=${strategy}`);
+
+        if (strategy === "gemma4-raw") {
+          // Raw completions — bypasses chat template so no <|think|> is injected
+          const systemWithNothink = CLASSIFIER_SYSTEM_PROMPT + NO_THINKING_SUFFIX;
+          const rawPrompt = buildGemma4NoThinkPrompt(systemWithNothink, input);
+          const response = await client.completions.create(
+            {
+              model: opts.model,
+              prompt: rawPrompt,
+              max_tokens: 200,
+              temperature: 0.1,
+              stop: ["<turn|>", "<|turn>"],
+            },
+            { signal: controller.signal },
+          );
+          content = response.choices?.[0]?.text ?? "";
+        } else {
+          // qwen-nothink (and general fallback): /nothink in system prompt
+          const systemWithNothink = CLASSIFIER_SYSTEM_PROMPT + NO_THINKING_SUFFIX;
+          const response = await client.chat.completions.create(
+            {
+              model: opts.model,
+              messages: [
+                { role: "system", content: systemWithNothink },
+                { role: "user", content: input },
+              ],
+              max_tokens: 200,
+              temperature: 0.1,
+            },
+            { signal: controller.signal },
+          );
+          content = response.choices?.[0]?.message?.content ?? "";
+        }
+      } else {
+        // Standard chat completions — server chat template controls thinking
+        const response = await client.chat.completions.create(
+          {
+            model: opts.model,
+            messages: [
+              { role: "system", content: CLASSIFIER_SYSTEM_PROMPT },
+              { role: "user", content: input },
+            ],
+            max_tokens: 200,
+            temperature: 0.1,
+          },
+          { signal: controller.signal },
+        );
+        content = response.choices?.[0]?.message?.content ?? "";
+      }
 
       clearTimeout(timeout);
 
-      const content = response.choices?.[0]?.message?.content ?? "";
       log.info(`[hybrid-gw] classifier raw response: ${content}`);
 
       const parsed = parseClassifyJson(content);

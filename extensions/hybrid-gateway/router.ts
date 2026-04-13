@@ -28,15 +28,19 @@ function matchSkillRoute(
 // ---- Routing Policy (Stage 2) ----
 
 /**
- * Three-tier routing (v3).
+ * Routing policy table.
  *
- * | complexity      | edge-first | cloud-first | cost-optimize | quality-first |
- * |-----------------|------------|-------------|---------------|---------------|
- * | trivial   (0)   | edge       | cloud       | gateway       | gateway       |
- * | simple    (1)   | edge       | cloud       | gateway       | gateway       |
- * | moderate  (2)   | edge       | cloud       | edge          | edge          |
- * | complex   (3)   | edge       | cloud       | cloud         | cloud         |
- * | expert    (4)   | edge       | cloud       | cloud         | cloud         |
+ * | complexity      | edge-first | cloud-first | cost-optimize-L1 | cost-optimize-L2 | cost-optimize-L3 |
+ * |-----------------|------------|-------------|------------------|------------------|------------------|
+ * | trivial   (0)   | edge       | cloud       | edge             | gateway          | gateway          |
+ * | simple    (1)   | edge       | cloud       | edge             | gateway          | gateway          |
+ * | moderate  (2)   | edge       | cloud       | cloud            | edge             | edge             |
+ * | complex   (3)   | edge       | cloud       | cloud            | cloud            | edge             |
+ * | expert    (4)   | edge       | cloud       | cloud            | cloud            | cloud            |
+ *
+ * L1 (small  ~3B):     0-1 -> edge(=gateway), 2-4 -> cloud
+ * L2 (medium ~26-35B): 0-1 -> gateway, 2 -> edge, 3-4 -> cloud
+ * L3 (large  ~120B):   0-1 -> gateway, 2-3 -> edge, 4 -> cloud
  */
 function applyPolicy(
   complexity: ComplexityLevel,
@@ -45,11 +49,24 @@ function applyPolicy(
   if (policy === "edge-first") return "edge";
   if (policy === "cloud-first") return "cloud";
 
-  // cost-optimize / quality-first: 0-1 -> gateway, 2 -> edge, 3-4 -> cloud
   const val = getComplexityValue(complexity);
-  if (val <= 1) return "gateway";
-  if (val === 2) return "edge";
-  return "cloud";
+
+  if (policy === "cost-optimize-L1") {
+    return val <= 1 ? "edge" : "cloud";
+  }
+  if (policy === "cost-optimize-L2") {
+    if (val <= 1) return "gateway";
+    if (val === 2) return "edge";
+    return "cloud";
+  }
+  if (policy === "cost-optimize-L3") {
+    if (val <= 1) return "gateway";
+    if (val <= 3) return "edge";
+    return "cloud";
+  }
+
+  // Fallback for unrecognized policy: treat as L1
+  return val <= 1 ? "edge" : "cloud";
 }
 
 // ---- Router ----

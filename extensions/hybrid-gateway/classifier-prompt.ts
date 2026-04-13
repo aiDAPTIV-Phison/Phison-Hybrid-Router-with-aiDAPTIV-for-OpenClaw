@@ -9,7 +9,6 @@ COMPLEXITY — pick the LOWEST level that fits:
 - "complex": system architecture design, multi-document deep synthesis, competitive research reports requiring expert judgment
 - "expert": novel algorithm design, PhD-level proofs, cutting-edge research
 
-When in doubt between two levels, pick the lower one. Reserve "complex" only for tasks needing deep expertise across multiple domains. Saving or storing information to files is always "moderate" at most.
 
 SKILLS (pick all that apply):
 - coding: writing or debugging PROGRAM CODE (functions, classes, scripts with logic). NOT file saving, NOT config editing, NOT writing markdown/text
@@ -26,6 +25,8 @@ SKILLS (pick all that apply):
 
 OUTPUT FORMAT (JSON only, no markdown):
 {"complexity":"<level>","skills":["<skill>"]}`;
+
+export const NO_THINKING_SUFFIX = `\n/nothink\nDo not use any internal thinking or chain-of-thought. Respond with ONLY the JSON output.`;
 
 const complexityValue = new Map<string, number>(
   COMPLEXITY_LEVELS.map((level, idx) => [level, idx]),

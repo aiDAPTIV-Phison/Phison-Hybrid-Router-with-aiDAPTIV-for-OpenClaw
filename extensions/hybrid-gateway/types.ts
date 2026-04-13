@@ -28,7 +28,10 @@ export type RoutingPolicy =
   | "edge-first"
   | "cloud-first"
   | "cost-optimize"
-  | "quality-first";
+  | "quality-first"
+  | "cost-optimize-L1"
+  | "cost-optimize-L2"
+  | "cost-optimize-L3";
 
 // --- Classifier output ---
 
@@ -64,6 +67,8 @@ export type TierModelMapping = {
 
 // --- Plugin config (matches openclaw plugin config section) ---
 
+export type ThinkingStrategy = "auto" | "gemma4-raw" | "qwen-nothink";
+
 export type HybridGatewayConfig = {
   classifier: {
     mode: "model" | "heuristic";
@@ -73,6 +78,15 @@ export type HybridGatewayConfig = {
     maxLatencyMs: number;
     cacheEnabled: boolean;
     cacheTtlSeconds: number;
+    /** Suppress model thinking during classification to reduce latency. */
+    disableThinking?: boolean;
+    /**
+     * How to suppress thinking:
+     * - "auto": inject /nothink in system prompt (universal) + use raw completions for Gemma 4
+     * - "gemma4-raw": raw /v1/completions with no-thinking prompt template
+     * - "qwen-nothink": inject /nothink in system prompt (Qwen 3/3.5)
+     */
+    thinkingStrategy?: ThinkingStrategy;
   };
   routing: {
     policy: RoutingPolicy;

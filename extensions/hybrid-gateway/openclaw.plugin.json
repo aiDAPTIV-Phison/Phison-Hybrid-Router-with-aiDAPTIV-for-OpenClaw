@@ -13,13 +13,15 @@
           "model": { "type": "string" },
           "maxLatencyMs": { "type": "number" },
           "cacheEnabled": { "type": "boolean" },
-          "cacheTtlSeconds": { "type": "number" }
+          "cacheTtlSeconds": { "type": "number" },
+          "disableThinking": { "type": "boolean" },
+          "thinkingStrategy": { "type": "string", "enum": ["auto", "gemma4-raw", "qwen-nothink"] }
         }
       },
       "routing": {
         "type": "object",
         "properties": {
-          "policy": { "type": "string", "enum": ["edge-first", "cloud-first", "cost-optimize", "quality-first"] },
+          "policy": { "type": "string", "enum": ["edge-first", "cloud-first", "cost-optimize", "cost-optimize-L1", "cost-optimize-L2", "cost-optimize-L3", "quality-first"] },
           "skillRoutes": {
             "type": "array",
             "items": {

@@ -51,7 +51,7 @@ const DEFAULT_CONFIG: HybridGatewayConfig = {
     cacheTtlSeconds: 300,
   },
   routing: {
-    policy: "cost-optimize",
+    policy: "cost-optimize-L1",
     skillRoutes: [],
     fallbackEnabled: true,
   },
