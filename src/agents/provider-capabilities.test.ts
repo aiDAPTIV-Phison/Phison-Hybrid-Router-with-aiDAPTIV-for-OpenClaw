@@ -6,6 +6,7 @@ import {
   resolveProviderCapabilities,
   resolveTranscriptToolCallIdMode,
   shouldDropThinkingBlocksForModel,
+  shouldDropThinkingBlocksForOpenAiCompatSelfHosted,
   shouldSanitizeGeminiThoughtSignaturesForModel,
   supportsOpenAiCompatTurnValidation,
 } from "./provider-capabilities.js";
@@ -88,5 +89,43 @@ describe("resolveProviderCapabilities", () => {
         modelId: "claude-3.7-sonnet",
       }),
     ).toBe(true);
+  });
+});
+
+describe("shouldDropThinkingBlocksForOpenAiCompatSelfHosted", () => {
+  it("is true for llamacpp with openai-completions", () => {
+    expect(
+      shouldDropThinkingBlocksForOpenAiCompatSelfHosted({
+        provider: "llamacpp",
+        modelApi: "openai-completions",
+      }),
+    ).toBe(true);
+  });
+
+  it("is false for openrouter openai-completions", () => {
+    expect(
+      shouldDropThinkingBlocksForOpenAiCompatSelfHosted({
+        provider: "openrouter",
+        modelApi: "openai-completions",
+      }),
+    ).toBe(false);
+  });
+
+  it("is false for official OpenAI", () => {
+    expect(
+      shouldDropThinkingBlocksForOpenAiCompatSelfHosted({
+        provider: "openai",
+        modelApi: "openai-completions",
+      }),
+    ).toBe(false);
+  });
+
+  it("is false when modelApi is not openai-completions", () => {
+    expect(
+      shouldDropThinkingBlocksForOpenAiCompatSelfHosted({
+        provider: "llamacpp",
+        modelApi: "anthropic-messages",
+      }),
+    ).toBe(false);
   });
 });

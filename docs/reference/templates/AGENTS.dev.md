@@ -9,6 +9,10 @@ read_when:
 
 This folder is the assistant's working directory.
 
+## Project context (OpenClaw)
+
+Bootstrap files from this workspace (`AGENTS.md`, `BOOTSTRAP.md`, `TOOLS.md`, `IDENTITY.md`, `USER.md`, `SOUL.md`, `HEARTBEAT.md`, and `MEMORY.md` / `memory.md` when present) are injected into the **system** prompt under `# Project Context`. Do **not** use `read` / search tools on those paths at session startup to load them. Exceptions: the user asks, you are about to edit and need exact on-disk text, or the system prompt says a file was truncated. Daily logs under `memory/` are not part of that injection—`read` them when you need them.
+
 ## First run (one-time)
 
 - If BOOTSTRAP.md exists, follow its ritual and delete it once complete.
@@ -35,7 +39,7 @@ git commit -m "Add agent workspace"
 ## Daily memory (recommended)
 
 - Keep a short daily log at memory/YYYY-MM-DD.md (create memory/ if needed).
-- On session start, read today + yesterday if present.
+- When you need recent continuity, read today + yesterday if present (these paths are not in `# Project Context` by default).
 - Capture durable facts, preferences, and decisions; avoid secrets.
 
 ## Heartbeats (optional)

@@ -139,6 +139,34 @@ export function shouldDropThinkingBlocksForModel(params: {
   );
 }
 
+/**
+ * OpenAI-compatible `/v1/chat/completions` stacks (llama.cpp, vLLM, LM Studio, …)
+ * usually cannot replay persisted `thinking` blocks. Downstream serializers often
+ * flatten them into extra `content[]` `text` parts, which leaks prior reasoning
+ * into the prompt (see hybrid/local routing from cloud models with reasoning).
+ */
+const OPENAI_COMPLETIONS_SELF_HOSTED_DROP_THINKING = new Set([
+  "llamacpp",
+  "llamacpp-large",
+]);
+
+export function shouldDropThinkingBlocksForOpenAiCompatSelfHosted(params: {
+  provider?: string | null;
+  modelApi?: string | null;
+}): boolean {
+  if (params.modelApi !== "openai-completions") {
+    return false;
+  }
+  if (isOpenAiProviderFamily(params.provider)) {
+    return false;
+  }
+  const id = normalizeProviderId(params.provider ?? "");
+  if (!id) {
+    return false;
+  }
+  return OPENAI_COMPLETIONS_SELF_HOSTED_DROP_THINKING.has(id);
+}
+
 export function shouldSanitizeGeminiThoughtSignaturesForModel(params: {
   provider?: string | null;
   modelId?: string | null;

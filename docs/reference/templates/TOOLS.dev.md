@@ -22,3 +22,5 @@ It does not define which tools exist; OpenClaw provides built-in tools internall
 - Text-to-speech: specify voice, target speaker/room, and whether to stream.
 
 Add whatever else you want the assistant to know about your local toolchain.
+
+OpenClaw injects `TOOLS.md` into `# Project Context` when it exists. Do not use the `read` tool on `TOOLS.md` unless you are editing it, the user asks, or the system prompt says it was truncated.

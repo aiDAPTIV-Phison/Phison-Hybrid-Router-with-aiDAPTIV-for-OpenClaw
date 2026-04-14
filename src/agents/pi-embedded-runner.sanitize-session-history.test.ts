@@ -803,4 +803,41 @@ describe("sanitizeSessionHistory", () => {
     const types = getAssistantContentTypes(result);
     expect(types).toContain("thinking");
   });
+
+  it("drops assistant thinking blocks for llamacpp openai-completions (avoid wire flatten leak)", async () => {
+    setNonGoogleModelApi();
+
+    const messages = makeThinkingAndTextAssistantMessages("reasoning");
+
+    const result = await sanitizeSessionHistory({
+      messages,
+      modelApi: "openai-completions",
+      provider: "llamacpp",
+      modelId: "Qwen3.5-35B-A3B-Q4_K_M",
+      sessionManager: makeMockSessionManager(),
+      sessionId: TEST_SESSION_ID,
+    });
+
+    const types = getAssistantContentTypes(result);
+    expect(types).not.toContain("thinking");
+    expect(types).toContain("text");
+    expect(getAssistantMessage(result).content).toEqual([{ type: "text", text: "hi" }]);
+  });
+
+  it("preserves thinking blocks for openrouter openai-completions", async () => {
+    setNonGoogleModelApi();
+
+    const messages = makeThinkingAndTextAssistantMessages("reasoning");
+
+    const result = await sanitizeSessionHistory({
+      messages,
+      modelApi: "openai-completions",
+      provider: "openrouter",
+      modelId: "stepfun/step-3.5-flash",
+      sessionManager: makeMockSessionManager(),
+      sessionId: TEST_SESSION_ID,
+    });
+
+    expect(getAssistantContentTypes(result)).toContain("thinking");
+  });
 });

@@ -25,3 +25,4 @@ This isn't just metadata. It's the start of figuring out who you are.
 Notes:
 - Save this file at the workspace root as `IDENTITY.md`.
 - For avatars, use a workspace-relative path like `avatars/openclaw.png`.
+- OpenClaw injects this file into `# Project Context`. Do not use the `read` tool on `IDENTITY.md` unless you are editing it, the user asks, or the system prompt says it was truncated.

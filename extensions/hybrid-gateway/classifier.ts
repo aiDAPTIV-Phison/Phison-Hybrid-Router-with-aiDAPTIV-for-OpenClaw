@@ -170,18 +170,23 @@ export function createClassifier(opts: ClassifierOptions) {
         } else {
           // qwen-nothink (and general fallback): /nothink in system prompt
           const systemWithNothink = CLASSIFIER_SYSTEM_PROMPT + NO_THINKING_SUFFIX;
-          const response = await client.chat.completions.create(
-            {
-              model: opts.model,
-              messages: [
-                { role: "system", content: systemWithNothink },
-                { role: "user", content: input },
-              ],
-              max_tokens: 200,
-              temperature: 0,
-            },
-            { signal: controller.signal },
-          );
+          // llama.cpp /v1/chat/completions: jinja template kwarg for Qwen3-style models
+          // (ignored by strict OpenAI; safe for local OpenAI-compatible stacks).
+          const chatBody: OpenAI.Chat.ChatCompletionCreateParams & {
+            chat_template_kwargs?: { enable_thinking?: boolean };
+          } = {
+            model: opts.model,
+            messages: [
+              { role: "system", content: systemWithNothink },
+              { role: "user", content: input },
+            ],
+            max_tokens: 200,
+            temperature: 0,
+            chat_template_kwargs: { enable_thinking: false },
+          };
+          const response = await client.chat.completions.create(chatBody, {
+            signal: controller.signal,
+          });
           content = response.choices?.[0]?.message?.content ?? "";
         }
       } else {

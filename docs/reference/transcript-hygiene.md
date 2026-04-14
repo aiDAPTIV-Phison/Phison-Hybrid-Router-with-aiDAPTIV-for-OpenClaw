@@ -127,6 +127,14 @@ external end-user instructions.
 
 - Thought signature cleanup: strip non-base64 `thought_signature` values (keep base64).
 
+**Self-hosted OpenAI chat completions (llama.cpp, vLLM, LM Studio, …)**
+
+- Drop assistant `thinking` content blocks before building model context when the
+  provider uses `openai-completions` and is a known local stack (`llamacpp`,
+  `llamacpp-large`, `vllm`, `lmstudio`, `koboldcpp`). Those endpoints typically
+  cannot replay `thinking` blocks; serializers flatten them into extra `text`
+  parts and leak prior reasoning into the prompt.
+
 **Everything else**
 
 - Image sanitization only.

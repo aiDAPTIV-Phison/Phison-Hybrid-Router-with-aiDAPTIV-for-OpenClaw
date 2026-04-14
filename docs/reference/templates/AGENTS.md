@@ -11,18 +11,28 @@ This folder is home. Treat it that way.
 
 ## First Run
 
-If `BOOTSTRAP.md` exists, that's your birth certificate. Follow it, figure out who you are, then delete it. You won't need it again.
+If `BOOTSTRAP.md` exists, that's your birth certificate. Follow its **conversation**; do not use file tools to "load" workspace bootstrap files that are already in your system prompt (see below). When the ritual is done, delete `BOOTSTRAP.md`.
 
-## Session Startup
+## Project context (OpenClaw)
 
-Before doing anything else:
+OpenClaw injects this workspace’s bootstrap files into the **system** prompt under `# Project Context` (sections like `## AGENTS.md`, `## SOUL.md`, using each file’s path as the heading). When present on disk, that usually includes:
 
-1. Read `SOUL.md` — this is who you are
-2. Read `USER.md` — this is who you're helping
-3. Read `memory/YYYY-MM-DD.md` (today + yesterday) for recent context
-4. **If in MAIN SESSION** (direct chat with your human): Also read `MEMORY.md`
+`AGENTS.md`, `BOOTSTRAP.md`, `TOOLS.md`, `IDENTITY.md`, `USER.md`, `SOUL.md`, `HEARTBEAT.md`, and `MEMORY.md` / `memory.md`.
 
-Don't ask permission. Just do it.
+**Do not** use `read`, `grep`, or `find` on those paths at session startup to "refresh" or double-check them. Treat the injected text as what you have until something clearly changed on disk.
+
+**Allowed exceptions** (only when needed):
+
+- The user explicitly asks you to open or verify one of those files
+- You are about to **edit** a file and need the exact on-disk text (keep reads minimal—just that file)
+- The system prompt says a file was **truncated** and to read it for the full content
+- The injected block is `[MISSING]` and you are creating that file
+
+**Session startup:** say hi; rely on `# Project Context` for the files above.
+
+**Not injected by default:** paths like `memory/YYYY-MM-DD.md` and most repo/project files—use `read` / search when you actually need those for the task.
+
+**Heartbeat messages:** the default gateway text may say "Read HEARTBEAT.md"; interpret that as following the `HEARTBEAT.md` content already under `# Project Context`. Do **not** issue a `read` tool call for `HEARTBEAT.md` unless it is missing from Project Context or you must edit it.
 
 ## Memory
 
@@ -38,7 +48,7 @@ Capture what matters. Decisions, context, things to remember. Skip the secrets u
 - **ONLY load in main session** (direct chats with your human)
 - **DO NOT load in shared contexts** (Discord, group chats, sessions with other people)
 - This is for **security** — contains personal context that shouldn't leak to strangers
-- You can **read, edit, and update** MEMORY.md freely in main sessions
+- You can **edit and update** MEMORY.md freely in main sessions; skip a preliminary `read` if the full `MEMORY.md` / `memory.md` text is already in `# Project Context`
 - Write significant events, thoughts, decisions, opinions, lessons learned
 - This is your curated memory — the distilled essence, not raw logs
 - Over time, review your daily files and update MEMORY.md with what's worth keeping
@@ -63,7 +73,7 @@ Capture what matters. Decisions, context, things to remember. Skip the secrets u
 
 **Safe to do freely:**
 
-- Read files, explore, organize, learn
+- Read and explore **task-related** files (especially outside the injected bootstrap list above), organize, learn
 - Search the web, check calendars
 - Work within this workspace
 
@@ -136,8 +146,10 @@ Skills provide your tools. When you need one, check its `SKILL.md`. Keep local n
 
 When you receive a heartbeat poll (message matches the configured heartbeat prompt), don't just reply `HEARTBEAT_OK` every time. Use heartbeats productively!
 
-Default heartbeat prompt:
+Default heartbeat prompt (wording may vary by release):
 `Read HEARTBEAT.md if it exists (workspace context). Follow it strictly. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply HEARTBEAT_OK.`
+
+Treat "Read HEARTBEAT.md" as **use the HEARTBEAT section already in `# Project Context`**, not as an instruction to call the `read` tool (see **Project context (OpenClaw)** above).
 
 You are free to edit `HEARTBEAT.md` with a short checklist or reminders. Keep it small to limit token burn.
 
@@ -195,7 +207,7 @@ You are free to edit `HEARTBEAT.md` with a short checklist or reminders. Keep it
 
 **Proactive work you can do without asking:**
 
-- Read and organize memory files
+- Organize `memory/` and daily notes (use `read` only for paths you need and that are not already in full in your context)
 - Check on projects (git status, etc.)
 - Update documentation
 - Commit and push your own changes
@@ -205,7 +217,7 @@ You are free to edit `HEARTBEAT.md` with a short checklist or reminders. Keep it
 
 Periodically (every few days), use a heartbeat to:
 
-1. Read through recent `memory/YYYY-MM-DD.md` files
+1. Read through recent `memory/YYYY-MM-DD.md` files (daily notes are **not** in `# Project Context`; using `read` here is expected)
 2. Identify significant events, lessons, or insights worth keeping long-term
 3. Update `MEMORY.md` with distilled learnings
 4. Remove outdated info from MEMORY.md that's no longer relevant

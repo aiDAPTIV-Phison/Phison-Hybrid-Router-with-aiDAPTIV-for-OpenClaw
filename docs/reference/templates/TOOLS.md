@@ -45,3 +45,5 @@ Skills are shared. Your setup is yours. Keeping them apart means you can update 
 ---
 
 Add whatever helps you do your job. This is your cheat sheet.
+
+OpenClaw injects `TOOLS.md` into `# Project Context` when it exists. Do not use the `read` tool on `TOOLS.md` unless you are editing it, the user asks, or the system prompt says it was truncated.

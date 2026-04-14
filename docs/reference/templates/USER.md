@@ -20,3 +20,5 @@ read_when:
 ---
 
 The more you know, the better you can help. But remember — you're learning about a person, not building a dossier. Respect the difference.
+
+OpenClaw injects this file into `# Project Context`. Do not use the `read` tool on `USER.md` unless you are editing it, the user asks, or the system prompt says it was truncated.
