@@ -31,6 +31,7 @@ type ToolStreamHost = {
   chatRunId: string | null;
   chatStream: string | null;
   chatStreamStartedAt: number | null;
+  chatReasoningStream: string | null;
   chatStreamSegments: Array<{ text: string; ts: number }>;
   toolStreamById: Map<string, ToolStreamEntry>;
   toolStreamOrder: string[];
@@ -243,6 +244,7 @@ export function resetToolStream(host: ToolStreamHost) {
   host.toolStreamOrder = [];
   host.chatToolMessages = [];
   host.chatStreamSegments = [];
+  host.chatReasoningStream = null;
 }
 
 export type CompactionStatus = {
@@ -402,7 +404,24 @@ export function handleAgentEvent(host: ToolStreamHost, payload?: AgentEventPaylo
   }
 
   if (payload.stream === "lifecycle" || payload.stream === "fallback") {
+    const phase = toTrimmedString(payload.data?.phase);
+    if (phase === "end" || phase === "error") {
+      host.chatReasoningStream = null;
+    }
     handleLifecycleFallbackEvent(host as CompactionHost, payload);
+    return;
+  }
+
+  // Stream reasoning (thinking) content so the UI can show it live when reasoningLevel is "stream"
+  if (payload.stream === "thinking") {
+    const accepted = resolveAcceptedSession(host, payload, { allowSessionScopedWhenIdle: true });
+    if (!accepted.accepted) {
+      return;
+    }
+    const text = typeof payload.data?.text === "string" ? payload.data.text : null;
+    if (text != null) {
+      host.chatReasoningStream = text;
+    }
     return;
   }
 

@@ -1,5 +1,6 @@
 import type { ImageContent } from "@mariozechner/pi-ai";
 import type { TypingController } from "./reply/typing.js";
+import type { ReasoningLevel } from "./thinking.js";
 
 export type BlockReplyContext = {
   abortSignal?: AbortSignal;
@@ -45,6 +46,12 @@ export type GetReplyOptions = {
   /** If true, suppress tool error warning payloads for this run. */
   suppressToolErrorWarnings?: boolean;
   onPartialReply?: (payload: ReplyPayload) => Promise<void> | void;
+  /**
+   * Override the session's persisted reasoning level for this run only.
+   * Gateway webchat passes `"stream"` here so the embedded agent emits reasoning
+   * even when the session store still has `reasoningLevel: "off"`.
+   */
+  reasoningLevel?: ReasoningLevel;
   onReasoningStream?: (payload: ReplyPayload) => Promise<void> | void;
   /** Called when a thinking/reasoning block ends. */
   onReasoningEnd?: () => Promise<void> | void;

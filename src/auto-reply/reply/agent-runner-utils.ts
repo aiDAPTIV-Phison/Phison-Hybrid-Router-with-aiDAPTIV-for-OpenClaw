@@ -175,6 +175,8 @@ export function buildEmbeddedRunBaseParams(params: {
   runId: string;
   authProfile: ReturnType<typeof resolveProviderScopedAuthProfile>;
   allowTransientCooldownProbe?: boolean;
+  /** When set (e.g. gateway webchat), replaces `run.reasoningLevel` for this embedded run. */
+  reasoningLevelOverride?: FollowupRun["run"]["reasoningLevel"];
 }) {
   return {
     sessionFile: params.run.sessionFile,
@@ -191,7 +193,7 @@ export function buildEmbeddedRunBaseParams(params: {
     ...params.authProfile,
     thinkLevel: params.run.thinkLevel,
     verboseLevel: params.run.verboseLevel,
-    reasoningLevel: params.run.reasoningLevel,
+    reasoningLevel: params.reasoningLevelOverride ?? params.run.reasoningLevel,
     execOverrides: params.run.execOverrides,
     bashElevated: params.run.bashElevated,
     timeoutMs: params.run.timeoutMs,
