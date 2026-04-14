@@ -108,6 +108,7 @@ export type ClassifierOptions = {
   maxLatencyMs: number;
   cacheEnabled: boolean;
   cacheTtlSeconds: number;
+  systemPrompt?: string;
   disableThinking?: boolean;
   thinkingStrategy?: ThinkingStrategy;
   logger?: { info: (msg: string) => void; warn: (msg: string) => void };
@@ -121,6 +122,8 @@ export function createClassifier(opts: ClassifierOptions) {
     baseURL: opts.baseUrl,
     apiKey: opts.apiKey,
   });
+
+  const sysPrompt = opts.systemPrompt ?? CLASSIFIER_SYSTEM_PROMPT;
 
   async function classify(input: string): Promise<ClassifyResult> {
     if (opts.mode === "heuristic") {
@@ -153,8 +156,7 @@ export function createClassifier(opts: ClassifierOptions) {
         log.info(`[hybrid-gw] thinking disabled, strategy=${strategy}`);
 
         if (strategy === "gemma4-raw") {
-          // Raw completions — bypasses chat template so no <|think|> is injected
-          const systemWithNothink = CLASSIFIER_SYSTEM_PROMPT + NO_THINKING_SUFFIX;
+          const systemWithNothink = sysPrompt + NO_THINKING_SUFFIX;
           const rawPrompt = buildGemma4NoThinkPrompt(systemWithNothink, input);
           const response = await client.completions.create(
             {
@@ -168,8 +170,7 @@ export function createClassifier(opts: ClassifierOptions) {
           );
           content = response.choices?.[0]?.text ?? "";
         } else {
-          // qwen-nothink (and general fallback): /nothink in system prompt
-          const systemWithNothink = CLASSIFIER_SYSTEM_PROMPT + NO_THINKING_SUFFIX;
+          const systemWithNothink = sysPrompt + NO_THINKING_SUFFIX;
           // llama.cpp /v1/chat/completions: jinja template kwarg for Qwen3-style models
           // (ignored by strict OpenAI; safe for local OpenAI-compatible stacks).
           const chatBody: OpenAI.Chat.ChatCompletionCreateParams & {
@@ -190,12 +191,11 @@ export function createClassifier(opts: ClassifierOptions) {
           content = response.choices?.[0]?.message?.content ?? "";
         }
       } else {
-        // Standard chat completions — server chat template controls thinking
         const response = await client.chat.completions.create(
           {
             model: opts.model,
             messages: [
-              { role: "system", content: CLASSIFIER_SYSTEM_PROMPT },
+              { role: "system", content: sysPrompt },
               { role: "user", content: input },
             ],
             max_tokens: 200,

@@ -78,6 +78,8 @@ export type HybridGatewayConfig = {
     maxLatencyMs: number;
     cacheEnabled: boolean;
     cacheTtlSeconds: number;
+    /** Override the built-in classifier system prompt. */
+    systemPrompt?: string;
     /** Suppress model thinking during classification to reduce latency. */
     disableThinking?: boolean;
     /**
