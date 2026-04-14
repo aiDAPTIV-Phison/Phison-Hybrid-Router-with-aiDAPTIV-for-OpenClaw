@@ -14,6 +14,7 @@
           "maxLatencyMs": { "type": "number" },
           "cacheEnabled": { "type": "boolean" },
           "cacheTtlSeconds": { "type": "number" },
+          "systemPrompt": { "type": "string", "description": "Override the built-in classifier system prompt" },
           "disableThinking": { "type": "boolean" },
           "thinkingStrategy": { "type": "string", "enum": ["auto", "gemma4-raw", "qwen-nothink"] }
         }
