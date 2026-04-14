@@ -1,6 +1,4 @@
-# Hybrid Gateway — 三層路由機制說明文件
-
-> 環境（對齊 `openclaw.json`）：**分類器 / Gateway 執行模型** 共用 qwen2.5-3b（aiDAPTIVLink，`127.0.0.1:13142`），只回 JSON 做分類，同時也作為 complexity 0–1 的執行模型；**Edge 執行模型** 可為 gemma4-26B / qwen3.5-35B / nemotron-120B / qwen3.5-122B 等（aiDAPTIVLink `13141`）；**Cloud 執行模型** 例如 **Gemini 2.5 Flash**（透過 OpenRouter）。
+# Hybrid Gateway — 說明文件
 
 ---
 
@@ -49,12 +47,12 @@ User Input
 
 **Edge 模型與 Policy Level 對應：**
 
-| 模型 | 參數量 | 建議 Policy |
-| --- | --- | --- |
-| gemma4-26B | 26B | cost-optimize-L2 |
-| qwen3.5-35B | 35B | cost-optimize-L2 |
-| nemotron-120B | 120B | cost-optimize-L3 |
-| qwen3.5-122B | 122B | cost-optimize-L3 |
+| 模型 | 建議 Policy |
+| --- | --- |
+| gemma4-26B | cost-optimize-L2 |
+| qwen3.5-35B | cost-optimize-L2 |
+| nemotron-120B | cost-optimize-L3 |
+| qwen3.5-122B | cost-optimize-L3 |
 
 **核心設計：** gateway 模型（qwen2.5-3b）同時承擔分類器和輕量執行兩個角色。依 Policy 不同，低複雜度任務可直接由分類器模型回應，減少不必要的大模型呼叫，降低延遲與資源消耗。Edge 模型可依硬體資源選擇不同大小，並搭配對應的 Policy Level。
 
@@ -91,7 +89,7 @@ User Input
 | Policy Level | 適用 Edge 模型 | 路由邏輯 |
 | --- | --- | --- |
 | **L1**（小型 ~3B） | qwen2.5-3B（gateway = edge 同一模型） | 0–1 → edge，2–4 → cloud |
-| **L2**（中型 ~26-35B） | gemma4-26B、qwen3.5-35B | 0–1 → gateway，2 → edge，3–4 → cloud（三層分流） |
+| **L2**（中型 ~26-35B） | gemma4-26B、qwen3.5-35B（建議gateway = edge 同一模型）| 0–1 → gateway，2 → edge，3–4 → cloud |
 | **L3**（大型 ~120B） | nemotron-120B、qwen3.5-122B | 0–1 → gateway，2–3 → edge，4 → cloud（邊緣能力最強） |
 
 > **注意：L3 需要同時運行一個小型 ~3B gateway 模型**（如 qwen2.5-3B）作為分類器與輕量執行。L1 因 gateway = edge 為同一模型，只需啟動一個實例。
