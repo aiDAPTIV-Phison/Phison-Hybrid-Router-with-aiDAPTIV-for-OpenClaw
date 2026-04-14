@@ -79,6 +79,8 @@ export type EmbeddedPiSubscribeState = {
   deterministicApprovalPromptSent: boolean;
   lastAssistant?: AgentMessage;
   toolGeneratingIndices: Set<number>;
+  toolGeneratingTokenCounts: Map<number, number>;
+  toolGeneratingNames: Map<number, string>;
 };
 
 export type EmbeddedPiSubscribeContext = {

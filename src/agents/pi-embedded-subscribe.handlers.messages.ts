@@ -131,6 +131,7 @@ export function handleMessageUpdate(
       typeof assistantRecord?.contentIndex === "number" ? assistantRecord.contentIndex : -1;
     if (contentIndex >= 0 && !ctx.state.toolGeneratingIndices.has(contentIndex)) {
       ctx.state.toolGeneratingIndices.add(contentIndex);
+      ctx.state.toolGeneratingTokenCounts.set(contentIndex, 0);
       const partial = assistantRecord?.partial;
       const partialContent =
         partial && typeof partial === "object"
@@ -151,11 +152,23 @@ export function handleMessageUpdate(
         toolBlock && typeof (toolBlock as Record<string, unknown>).name === "string"
           ? ((toolBlock as Record<string, unknown>).name as string).trim()
           : "";
+      ctx.state.toolGeneratingNames.set(contentIndex, rawName || "tool");
       emitAgentEvent({
         runId: ctx.params.runId,
         stream: "tool_generating",
-        data: { name: rawName || "tool" },
+        data: { name: rawName || "tool", tokens: 0 },
       });
+    } else if (contentIndex >= 0) {
+      const count = (ctx.state.toolGeneratingTokenCounts.get(contentIndex) ?? 0) + 1;
+      ctx.state.toolGeneratingTokenCounts.set(contentIndex, count);
+      if (count % 10 === 0) {
+        const name = ctx.state.toolGeneratingNames.get(contentIndex) ?? "tool";
+        emitAgentEvent({
+          runId: ctx.params.runId,
+          stream: "tool_generating",
+          data: { name, tokens: count },
+        });
+      }
     }
     return;
   }

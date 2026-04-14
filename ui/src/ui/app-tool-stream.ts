@@ -413,12 +413,15 @@ export function handleAgentEvent(host: ToolStreamHost, payload?: AgentEventPaylo
     }
     const genData = payload.data ?? {};
     const genName = typeof genData.name === "string" ? genData.name : "tool";
+    const genTokens = typeof genData.tokens === "number" ? genData.tokens : 0;
     const display = resolveToolDisplay({ name: genName });
     const now = Date.now();
     if (host.chatStream && host.chatStream.trim().length > 0 && !host.chatStream.startsWith("\u2699")) {
       host.chatStreamSegments = [...host.chatStreamSegments, { text: host.chatStream, ts: now }];
     }
-    host.chatStream = `\u2699\uFE0F ${display.label}...`;
+    host.chatStream = genTokens > 0
+      ? `\u2699\uFE0F ${display.label}... (${genTokens} tokens)`
+      : `\u2699\uFE0F ${display.label}...`;
     host.chatStreamStartedAt = host.chatStreamStartedAt ?? now;
     return;
   }

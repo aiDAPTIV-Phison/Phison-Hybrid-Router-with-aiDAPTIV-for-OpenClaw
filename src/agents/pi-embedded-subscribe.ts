@@ -80,6 +80,8 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     pendingMessagingMediaUrls: new Map(),
     deterministicApprovalPromptSent: false,
     toolGeneratingIndices: new Set(),
+    toolGeneratingTokenCounts: new Map(),
+    toolGeneratingNames: new Map(),
   };
   const usageTotals = {
     input: 0,
