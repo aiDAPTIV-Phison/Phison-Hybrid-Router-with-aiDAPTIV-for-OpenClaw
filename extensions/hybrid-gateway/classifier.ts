@@ -1,7 +1,25 @@
 import OpenAI from "openai";
-import { CLASSIFIER_SYSTEM_PROMPT, NO_THINKING_SUFFIX } from "./classifier-prompt.js";
+import { CLASSIFIER_SYSTEM_PROMPT, NO_THINKING_SUFFIX, getComplexityValue } from "./classifier-prompt.js";
 import { heuristicClassify } from "./heuristic.js";
 import { COMPLEXITY_LEVELS, type ClassifyResult, type ComplexityLevel, type Skill, type ThinkingStrategy } from "./types.js";
+
+// ---- Post-classification rules ----
+
+const SKILL_COUNT_COMPLEXITY_FLOOR: { minSkills: number; floor: ComplexityLevel } = {
+  minSkills: 4,
+  floor: "complex",
+};
+
+function applyPostRules(result: ClassifyResult): ClassifyResult {
+  const rule = SKILL_COUNT_COMPLEXITY_FLOOR;
+  if (
+    result.skills.length >= rule.minSkills &&
+    getComplexityValue(result.complexity) < getComplexityValue(rule.floor)
+  ) {
+    return { ...result, complexity: rule.floor };
+  }
+  return result;
+}
 
 // ---- Cache ----
 
@@ -143,7 +161,7 @@ export function createClassifier(opts: ClassifierOptions) {
               model: opts.model,
               prompt: rawPrompt,
               max_tokens: 200,
-              temperature: 0.1,
+              temperature: 0,
               stop: ["<turn|>", "<|turn>"],
             },
             { signal: controller.signal },
@@ -160,7 +178,7 @@ export function createClassifier(opts: ClassifierOptions) {
                 { role: "user", content: input },
               ],
               max_tokens: 200,
-              temperature: 0.1,
+              temperature: 0,
             },
             { signal: controller.signal },
           );
@@ -176,7 +194,7 @@ export function createClassifier(opts: ClassifierOptions) {
               { role: "user", content: input },
             ],
             max_tokens: 200,
-            temperature: 0.1,
+            temperature: 0,
           },
           { signal: controller.signal },
         );
@@ -190,13 +208,19 @@ export function createClassifier(opts: ClassifierOptions) {
       const parsed = parseClassifyJson(content);
 
       if (parsed) {
+        const final = applyPostRules(parsed);
+        if (final.complexity !== parsed.complexity) {
+          log.info(
+            `[hybrid-gw] post-rule: ${parsed.complexity} -> ${final.complexity} (${parsed.skills.length} skills >= ${SKILL_COUNT_COMPLEXITY_FLOOR.minSkills})`,
+          );
+        }
         if (opts.cacheEnabled) {
-          cache.set(input, parsed, opts.cacheTtlSeconds);
+          cache.set(input, final, opts.cacheTtlSeconds);
         }
         log.info(
-          `[hybrid-gw] classified: complexity=${parsed.complexity} skills=[${parsed.skills}]`,
+          `[hybrid-gw] classified: complexity=${final.complexity} skills=[${final.skills}]`,
         );
-        return parsed;
+        return final;
       }
 
       log.warn(`[hybrid-gw] model returned unparseable JSON, falling back to heuristic`);
@@ -207,7 +231,7 @@ export function createClassifier(opts: ClassifierOptions) {
     }
 
     // L3: Heuristic fallback
-    const fallback = heuristicClassify(input);
+    const fallback = applyPostRules(heuristicClassify(input));
     log.info(`[hybrid-gw] heuristic fallback: complexity=${fallback.complexity}`);
     return fallback;
   }

@@ -5,8 +5,8 @@ export const CLASSIFIER_SYSTEM_PROMPT = `You are a complexity classifier. Analyz
 COMPLEXITY — pick the LOWEST level that fits:
 - "trivial": greetings (hi, hello, hey), single-word responses, yes/no questions, simple time queries, pure arithmetic with no context (e.g. "1+1", "2*3", "what is 5+7")
 - "simple": basic factual Q&A, short translation, single lookup, simple file read, straightforward how-to with one step
-- "moderate": multi-step tasks, writing code snippets, summarization, creative writing, file creation, config editing, data analysis, saving notes/memory to files
-- "complex": system architecture design, multi-document deep synthesis, competitive research reports requiring expert judgment
+- "moderate": multi-step tasks, short code snippets, summarization, short creative writing, simple file creation, config editing, basic data analysis, saving notes/memory to files
+- "complex": system architecture design, multi-document deep synthesis, competitive research reports requiring expert judgment, comprehensive multi-dimensional comparison/analysis with structured output (tables + formatted code/HTML), tasks combining 3+ skills or requiring long-form content generation
 - "expert": novel algorithm design, PhD-level proofs, cutting-edge research
 
 

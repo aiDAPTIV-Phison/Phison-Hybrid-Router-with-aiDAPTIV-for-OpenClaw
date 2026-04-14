@@ -103,7 +103,7 @@
             "cacheTtlSeconds": 300
           },
           "routing": {
-            "policy": "cost-optimize",
+            "policy": "cost-optimize-L2",
             "skillRoutes": [
               {
                 "skillPattern": "image-gen",

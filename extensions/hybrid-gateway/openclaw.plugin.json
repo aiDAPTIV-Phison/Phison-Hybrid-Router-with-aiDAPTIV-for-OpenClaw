@@ -35,7 +35,12 @@
               "required": ["skillPattern"]
             }
           },
-          "fallbackEnabled": { "type": "boolean" }
+          "fallbackEnabled": { "type": "boolean" },
+          "bypassPatterns": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Regex patterns (case-insensitive). Prompts matching any pattern bypass routing override."
+          }
         }
       },
       "models": {

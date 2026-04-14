@@ -1,0 +1,51 @@
+flowchart TD
+
+    subgraph OC_TOP["Original OpenClaw"]
+        USER["User Chat Input"]
+        ORIG["Original Main Model<br/>llamacpp / gpt-oss-120b"]
+    end
+
+    subgraph GW["Hybrid Gateway Plugin"]
+        PRECHECK{"Pre-check"}
+        NEWSESS["New Session?<br/>/new or /reset"]
+        BYPASS["Bypass Pattern?"]
+        CLASSIFY["CLASSIFY"]
+        SMALL["Classifier / Gateway Model"]
+        CLR["Classification Result: <br/>{ complexity, skills }"]
+        POST_RULES["Post Rules<br/>skills ≥ 4 → complexity ≥ complex"]
+        ROUTE["ROUTE"]
+        SKR{"Skill Route<br/>Override?"}
+        POLICY["Three-Tier Policy<br/>(L1/L2/L3/edge-first/cloud-first)"]
+
+        PRECHECK --> NEWSESS
+        NEWSESS -->|Yes| FORCE_CLOUD["Force Cloud"]
+        NEWSESS -->|No| BYPASS
+        BYPASS -->|Match| DEFAULT["Return undefined<br/>(use OpenClaw default)"]
+        BYPASS -->|No Match| CLASSIFY
+        CLASSIFY --> SMALL
+        SMALL --> CLR
+        CLR --> POST_RULES
+        POST_RULES --> ROUTE
+        ROUTE --> SKR
+        SKR -->|No| POLICY
+    end
+
+    subgraph OC_BOT["Execution Layer"]
+        EXECUTE["EXECUTE<br/>Main model entry overridden"]
+        GW_MODEL["Gateway Model (tier=gateway)<br/>llamacpp / local aiDAPTIVLink"]
+        EDGE["Edge Model (tier=edge)<br/>llamacpp / local aiDAPTIVLink"]
+        CLOUD["Cloud Model (tier=cloud)<br/> cloud model"]
+
+        EXECUTE --> GW_MODEL
+        EXECUTE --> EDGE
+        EXECUTE --> CLOUD
+    end
+
+    USER -->|"Original direct call"| ORIG
+    USER -->|"Gateway intercept"| PRECHECK
+    ORIG -. "Overridden by Gateway" .-> EXECUTE
+    FORCE_CLOUD --> CLOUD
+    POLICY -->|"gateway"| EXECUTE
+    POLICY -->|"edge"| EXECUTE
+    POLICY -->|"cloud"| EXECUTE
+    SKR -->|Yes| EXECUTE
