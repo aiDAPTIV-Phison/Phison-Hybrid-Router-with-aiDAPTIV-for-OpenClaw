@@ -25,7 +25,7 @@
         "models": []
       },
       "llamacpp": {
-        "baseUrl": "http://127.0.0.1:13142/v1",
+        "baseUrl": "http://127.0.0.1:13141/v1",
         "api": "openai-completions",
         "apiKey": "empty",
         "models": []
@@ -41,10 +41,10 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "llamacpp/qwen2.5-3b-instruct-q4_k_m"
+        "primary": "openrouter/google/gemini-3.1-flash-lite-preview"
       },
       "models": {
-        "llamacpp/qwen2.5-3b-instruct-q4_k_m": {}
+        "openrouter/google/gemini-3.1-flash-lite-preview": {}
       },
       "workspace": "C:\\Users\\user\\.openclaw\\workspace",
       "compaction": {
@@ -53,7 +53,14 @@
     }
   },
   "tools": {
-    "profile": "coding"
+    "profile": "coding",
+    "web": {
+      "search": {
+        "enabled": true,
+        "provider": "brave",
+        "apiKey": ""
+      }
+    }
   },
   "commands": {
     "native": "auto",
@@ -95,9 +102,9 @@
         "config": {
           "classifier": {
             "mode": "model",
-            "baseUrl": "http://127.0.0.1:13142/v1",
+            "baseUrl": "http://127.0.0.1:13141/v1",
             "apiKey": "empty",
-            "model": "qwen2.5-3b-instruct-q4_k_m",
+            "model": "gemma-4-26B-A4B-it-Q4_K_M",
             "maxLatencyMs": 30000,
             "cacheEnabled": true,
             "cacheTtlSeconds": 300,
@@ -105,7 +112,7 @@
             "thinkingStrategy": "auto"
           },
           "routing": {
-            "policy": "cost-optimize",
+            "policy": "cost-optimize-L2",
             "skillRoutes": [
               {
                 "skillPattern": "image-gen",
@@ -118,15 +125,15 @@
           "models": {
             "gateway": {
               "provider": "llamacpp",
-              "model": "qwen2.5-3b-instruct-q4_k_m"
+              "model": "gemma-4-26B-A4B-it-Q4_K_M"
             },
             "edge": {
               "provider": "llamacpp-large",
-              "model": "gpt-oss-120b-Q4_K_M"
+              "model": "gemma-4-26B-A4B-it-Q4_K_M"
             },
             "cloud": {
               "provider": "openrouter",
-              "model": "google/gemini-2.5-flash"
+              "model": "google/gemini-3.1-flash-lite-preview"
             }
           }
         }
