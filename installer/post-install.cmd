@@ -19,6 +19,12 @@ if "%APP_DIR%"=="" (
 set "NODE=%APP_DIR%\node.exe"
 set "LOG=%APP_DIR%\install.log"
 
+:: Prepend APP_DIR so that bare 'node' resolves to the bundled node.exe.
+:: This ensures pnpm.cmd itself and all lifecycle scripts (esbuild, koffi,
+:: rolldown, etc.) use the same Node.js version that ships with the installer,
+:: rather than whatever version (if any) is installed on the host system.
+set "PATH=%APP_DIR%;%PATH%"
+
 :: Verify install directory exists
 if not exist "%APP_DIR%\" (
     echo [ERROR] Installation directory not found: %APP_DIR%
