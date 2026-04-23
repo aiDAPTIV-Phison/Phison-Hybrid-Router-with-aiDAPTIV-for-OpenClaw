@@ -8,6 +8,8 @@
 
 **Architecture:** Installer ships a pre-built Ubuntu 24.04 rootfs (`aidaptivclaw.tar.gz`) containing a fully built OpenClaw under `/opt/openclaw`. On install, `wsl --import` registers the rootfs as a private distro `aidaptivclaw`. A systemd unit (`openclaw-gateway.service`) starts the gateway as the non-root `openclaw` user with hardening directives confining writes to `/home/openclaw/{workspace,.openclaw}` and `/tmp`. The Windows launcher only triggers `wsl.exe -d aidaptivclaw` and opens the browser at `http://localhost:18789` (reachable via WSL2 default localhost forwarding).
 
+**Target-machine install flow (dual-phase, handles missing WSL):** `post-install.ps1` runs in two phases. Phase 1 verifies prerequisites — Windows version, CPU virtualization (hard-fail with BIOS instructions if disabled, since no API can fix BIOS), and WSL2. If WSL is missing, Phase 1 runs `wsl --install --no-distribution`, registers a one-shot HKCU RunOnce entry to fire Phase 2 after the required reboot, and exits with code 2 (Inno Setup interprets this as "reboot recommended"). If WSL is already present, Phase 1 short-circuits straight into Phase 2 in the same process — no reboot. Phase 2 imports the rootfs, patches `.wslconfig` with `vmIdleTimeout=-1`, boots the distro, waits for the gateway HTTP endpoint, opens the browser, and removes its own RunOnce entry. Failures at any stage produce friendly dialogs that link to `docs/install/windows.md` for self-service troubleshooting (BIOS enable, manual `wsl --install`, corporate Group Policy workarounds).
+
 **Build pipeline:** Rootfs is built natively in WSL (no Docker). A throwaway WSL distro is created from Canonical's official Ubuntu 24.04 WSL base rootfs, a bash provisioning script installs Node + pnpm + builds OpenClaw, then `wsl --export` produces the shippable tarball. Source code is injected into the build distro via `git archive HEAD | wsl -e tar -xf -` (no `/mnt/c` mount needed, only git-tracked files included).
 
 **Tech Stack:** Inno Setup (installer), Bash (rootfs provision script), WSL2, Ubuntu 24.04 (Canonical WSL rootfs), systemd, Node.js 22+, pnpm.
@@ -675,178 +677,356 @@ git commit -m "installer: switch openclaw.iss from Windows-native to WSL rootfs 
 
 ---
 
-### Task 2.2: Replace `post-install.cmd` with `post-install.ps1` (WSL provisioning)
+### Task 2.2: Replace `post-install.cmd` with dual-phase `post-install.ps1`
 
 **Files:**
 - Create: `installer/post-install.ps1`
 - Delete: `installer/post-install.cmd` (in Task 2.5 after verifying replacement works)
 
-**Step 1: Write the new provisioning script**
+**Background — flow on the target machine:**
+
+```
+Phase 1 (initial install, run by Inno Setup [Code]):
+  1. Check Windows >= Win10 22H2 / Win11   -> hard fail with friendly dialog if not
+  2. Check VT-x / AMD-V enabled             -> hard fail with BIOS instructions if not
+                                               (no API can fix BIOS)
+  3. Check WSL2 availability:
+     a. WSL already OK -> jump to Phase 1.5 in the same process (no reboot)
+     b. WSL missing    -> run `wsl --install --no-distribution`,
+                          register HKCU RunOnce to fire Phase 2 after the
+                          required reboot, prompt user to reboot, exit.
+                          (`wsl --install` failure -> dialog with manual
+                           command + abort, no RunOnce registered.)
+
+Phase 1.5 (WSL was already OK; no reboot needed):
+  Continues straight into Phase 2 work in the same Inno Setup session.
+
+Phase 2 (after reboot, fired by HKCU RunOnce):
+  1. Re-verify VT-x + WSL2 (defensive)
+  2. Set WSL default version to 2 if not already
+  3. wsl --import aidaptivclaw -> %ProgramData%\aiDAPTIVClaw\wsl\
+  4. Update %USERPROFILE%\.wslconfig with vmIdleTimeout=-1
+  5. First-boot the distro (systemd auto-starts openclaw-gateway.service)
+  6. Wait for http://localhost:18789 to respond (max 30s)
+  7. Open browser to dashboard URL
+  8. Show "Setup complete" toast / dialog
+  9. Cleanup HKCU RunOnce entry
+```
+
+**Step 1: Write `installer/post-install.ps1`**
 
 ```powershell
 <#
 .SYNOPSIS
-    aiDAPTIVClaw post-install: provisions the WSL2 sandbox.
+    aiDAPTIVClaw target-machine post-install / WSL provisioning.
 
 .DESCRIPTION
-    Replaces the previous Windows-native build pipeline. Steps:
-    1. Verify WSL2 is available (offer to install if not).
-    2. Verify CPU virtualization / Hyper-V is enabled.
-    3. Import installer/aidaptivclaw.tar.gz as a private WSL distro `aidaptivclaw`.
-    4. Configure %USERPROFILE%\.wslconfig vmIdleTimeout (prevent gateway from being killed by idle shutdown).
-    5. First-boot the distro to trigger systemd + the gateway service.
-    6. Smoke test: HTTP GET http://localhost:18789/ should return 200 within 30s.
+    Dual-phase script. Phase selection by -Phase parameter:
+
+      Phase 1 (called from Inno Setup):
+        * Verify Windows version, virtualization, WSL.
+        * If WSL missing: install it, register HKCU RunOnce for Phase 2,
+          ask user to reboot.
+        * If WSL OK: fall through to Phase 2 logic in the same process.
+
+      Phase 2 (called after reboot via RunOnce, OR rerun by user):
+        * wsl --import the bundled rootfs.
+        * Configure .wslconfig.
+        * Boot distro and verify gateway responds.
+        * Open browser to dashboard URL.
+        * Cleanup the RunOnce entry.
+
+    Exit codes (consumed by Inno Setup [Code]):
+        0  success (Phase 1 went through to Phase 2 inline, all good)
+        2  reboot required (Phase 1 installed WSL, RunOnce registered)
+        3  prerequisites unmet (VT-x off / Windows too old / etc.)
+        1  any other failure (see install.log)
 
 .PARAMETER AppDir
-    Directory where the installer placed files (passed by Inno Setup as {app}).
+    Directory where the installer placed files (Inno Setup {app}).
+.PARAMETER Phase
+    1 (default, called from installer) or 2 (called from RunOnce after reboot).
 .PARAMETER FromInstaller
-    Set to $true when called from Inno Setup [Code] section.
+    Set when invoked from Inno Setup [Code]; suppresses interactive prompts.
 #>
 param(
     [Parameter(Mandatory=$true)] [string]$AppDir,
+    [ValidateSet('1','2')] [string]$Phase = '1',
     [switch]$FromInstaller
 )
 
 $ErrorActionPreference = "Stop"
-$LogFile = Join-Path $AppDir "install.log"
-$Tarball = Join-Path $AppDir "aidaptivclaw.tar.gz"
-$DistroName = "aidaptivclaw"
-$DistroDir = Join-Path $AppDir "distro"
+
+$LogFile     = Join-Path $AppDir "install.log"
+$Tarball     = Join-Path $AppDir "rootfs\aidaptivclaw.tar.gz"
+$DistroName  = "aidaptivclaw"
+$DistroDir   = Join-Path $env:ProgramData "aiDAPTIVClaw\wsl"
+$RunOnceKey  = "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce"
+$RunOnceName = "aiDAPTIVClawPostInstall"
+$DocsUrl     = "https://github.com/<your-org>/aiDAPTIVClaw/blob/main/docs/install/windows.md"
 
 function Write-Log {
     param([string]$Message)
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $line = "[$ts] $Message"
+    $line = "[$ts] [Phase$Phase] $Message"
     Write-Host $line
     Add-Content -Path $LogFile -Value $line
 }
 
-# --- Step 1: Verify WSL ---
-Write-Log "[1/5] Checking WSL2..."
-$wslStatus = & wsl --status 2>&1
-if ($LASTEXITCODE -ne 0) {
-    Write-Log "WSL is not installed. Running 'wsl --install --no-distribution'..."
-    & wsl --install --no-distribution
+function Show-FatalDialog {
+    param([string]$Title, [string]$Body)
+    Add-Type -AssemblyName PresentationFramework -ErrorAction SilentlyContinue
+    [System.Windows.MessageBox]::Show($Body, $Title, 'OK', 'Error') | Out-Null
+}
+
+function Test-VirtualizationEnabled {
+    # Returns $true if CPU virtualization is enabled at firmware level.
+    # WSL2 cannot run without this.
+    try {
+        $cpu = Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1
+        return [bool]$cpu.VirtualizationFirmwareEnabled
+    } catch {
+        return $false
+    }
+}
+
+function Test-WindowsVersionOk {
+    # WSL2 supported on Win10 1903+ but we require 22H2+ for production stability.
+    $ver = [Environment]::OSVersion.Version
+    if ($ver.Major -lt 10) { return $false }
+    if ($ver.Build -lt 19045) { return $false }  # 19045 = Win10 22H2 RTM
+    return $true
+}
+
+function Test-Wsl2Ready {
+    & wsl.exe --status 2>&1 | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Register-Phase2RunOnce {
+    # HKCU RunOnce: fires once on the next interactive logon for THIS user, then auto-deletes.
+    $cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$AppDir\post-install.ps1`" -AppDir `"$AppDir`" -Phase 2"
+    if (-not (Test-Path $RunOnceKey)) { New-Item -Path $RunOnceKey -Force | Out-Null }
+    Set-ItemProperty -Path $RunOnceKey -Name $RunOnceName -Value $cmd
+    Write-Log "Registered HKCU RunOnce: $RunOnceName"
+}
+
+function Unregister-Phase2RunOnce {
+    if (Test-Path "$RunOnceKey") {
+        Remove-ItemProperty -Path $RunOnceKey -Name $RunOnceName -ErrorAction SilentlyContinue
+    }
+}
+
+# ============================================================
+#  Phase 1: prerequisites + maybe-install-WSL + maybe-reboot
+# ============================================================
+function Invoke-Phase1 {
+    Write-Log "Starting Phase 1 (prerequisite checks + WSL install if needed)"
+
+    # 1. Windows version gate
+    if (-not (Test-WindowsVersionOk)) {
+        Show-FatalDialog "Unsupported Windows" `
+            "aiDAPTIVClaw requires Windows 10 22H2 or Windows 11.`n`nPlease update Windows and run the installer again."
+        Write-Log "ERROR: Unsupported Windows version: $([Environment]::OSVersion.Version)"
+        exit 3
+    }
+
+    # 2. CPU virtualization gate (no API can fix this)
+    if (-not (Test-VirtualizationEnabled)) {
+        Show-FatalDialog "Virtualization not enabled" `
+            ("aiDAPTIVClaw requires CPU virtualization (Intel VT-x or AMD-V) to be enabled in BIOS.`n`n" +
+             "Please reboot, enter BIOS/UEFI setup, and enable:`n" +
+             "  - Intel CPU: 'Intel Virtualization Technology' or 'VT-x'`n" +
+             "  - AMD CPU:  'SVM Mode' or 'AMD-V'`n`n" +
+             "Then run the installer again.`n`n" +
+             "See: $DocsUrl#bios")
+        Write-Log "ERROR: CPU virtualization is disabled at firmware level"
+        exit 3
+    }
+    Write-Log "Virtualization OK"
+
+    # 3. WSL2 check
+    if (Test-Wsl2Ready) {
+        Write-Log "WSL2 already installed -> falling through to Phase 2 (no reboot)"
+        Invoke-Phase2
+        return
+    }
+
+    Write-Log "WSL2 not installed; attempting 'wsl --install --no-distribution'"
+    & wsl.exe --install --no-distribution 2>&1 | Tee-Object -FilePath $LogFile -Append | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        Write-Log "ERROR: 'wsl --install' failed. User likely needs to enable virtualization in BIOS or update Windows."
-        if (-not $FromInstaller) { Read-Host "Press Enter to exit" }
+        Show-FatalDialog "WSL install failed" `
+            ("Automatic WSL installation failed (exit $LASTEXITCODE).`n`n" +
+             "Please run the following in an Administrator PowerShell, then reboot:`n`n" +
+             "  wsl --install --no-distribution`n`n" +
+             "Then run the installer again.`n`n" +
+             "Common causes:`n" +
+             "  - No internet connection`n" +
+             "  - Group Policy blocks Windows Optional Features`n" +
+             "  - Antivirus blocks the installer`n`n" +
+             "See: $DocsUrl#wsl-install-failed")
+        Write-Log "ERROR: 'wsl --install' failed (exit $LASTEXITCODE)"
         exit 1
     }
-    Write-Log "WSL installed. A reboot may be required before continuing."
-    Write-Log "After reboot, re-run this script: $PSCommandPath -AppDir '$AppDir'"
-    exit 2  # special exit code: reboot required
-}
-if ($wslStatus -match "Default Version: 1") {
-    Write-Log "Setting WSL default version to 2..."
-    & wsl --set-default-version 2
-}
-Write-Log "  WSL2 OK."
 
-# --- Step 2: Verify tarball exists ---
-Write-Log "[2/5] Checking rootfs tarball..."
-if (-not (Test-Path $Tarball)) {
-    Write-Log "ERROR: rootfs not found: $Tarball"
-    if (-not $FromInstaller) { Read-Host "Press Enter to exit" }
-    exit 1
-}
-$sizeMb = [math]::Round((Get-Item $Tarball).Length / 1MB, 1)
-Write-Log "  Tarball OK ($sizeMb MB)."
+    # WSL kernel installed. We MUST reboot before `wsl --import` will work.
+    Register-Phase2RunOnce
 
-# --- Step 3: Import distro ---
-Write-Log "[3/5] Importing distro '$DistroName'..."
-# If a previous install left a distro behind, unregister it first
-$existing = & wsl --list --quiet 2>&1
-if ($existing -match "^$DistroName`$") {
-    Write-Log "  Removing previous '$DistroName' distro..."
-    & wsl --unregister $DistroName 2>&1 | Out-Null
-}
-if (-not (Test-Path $DistroDir)) {
-    New-Item -ItemType Directory -Path $DistroDir -Force | Out-Null
-}
-& wsl --import $DistroName $DistroDir $Tarball --version 2 2>&1 | Tee-Object -FilePath $LogFile -Append
-if ($LASTEXITCODE -ne 0) {
-    Write-Log "ERROR: 'wsl --import' failed."
-    if (-not $FromInstaller) { Read-Host "Press Enter to exit" }
-    exit 1
-}
-Write-Log "  Distro imported."
+    Add-Type -AssemblyName PresentationFramework -ErrorAction SilentlyContinue
+    [System.Windows.MessageBox]::Show(
+        ("WSL2 has been installed.`n`n" +
+         "Windows must reboot to activate it. Setup will resume automatically " +
+         "after you log back in.`n`n" +
+         "Click OK, then save your work and reboot."),
+        "Reboot required", 'OK', 'Information') | Out-Null
 
-# --- Step 4: Configure host .wslconfig (vmIdleTimeout) ---
-Write-Log "[4/5] Configuring %USERPROFILE%\.wslconfig..."
-$wslConfigPath = Join-Path $env:USERPROFILE ".wslconfig"
-$wslConfigContent = ""
-if (Test-Path $wslConfigPath) {
-    $wslConfigContent = Get-Content $wslConfigPath -Raw
+    Write-Log "WSL installed; reboot required. RunOnce registered."
+    exit 2  # signals Inno Setup to suggest a reboot
 }
-# Idempotent: only add the [wsl2] vmIdleTimeout=-1 section if not already present.
-# vmIdleTimeout=-1 prevents WSL from auto-shutting down the gateway after 60s idle.
-if ($wslConfigContent -notmatch "(?ms)^\[wsl2\][^\[]*vmIdleTimeout") {
-    if ($wslConfigContent.Length -gt 0 -and -not $wslConfigContent.EndsWith("`n")) {
-        $wslConfigContent += "`r`n"
+
+# ============================================================
+#  Phase 2: import distro, boot it, open browser
+# ============================================================
+function Invoke-Phase2 {
+    Write-Log "Starting Phase 2 (WSL import + first boot)"
+
+    # Defensive re-check (handle: user disabled VT-x between phases)
+    if (-not (Test-VirtualizationEnabled)) {
+        Show-FatalDialog "Virtualization disabled" `
+            "CPU virtualization is no longer enabled. Please re-enable it in BIOS and re-run the installer."
+        Unregister-Phase2RunOnce
+        exit 3
     }
-    $wslConfigContent += @"
+    if (-not (Test-Wsl2Ready)) {
+        Show-FatalDialog "WSL not ready" `
+            "WSL2 is still not available. Please open an Administrator PowerShell and run 'wsl --install --no-distribution', then reboot."
+        Unregister-Phase2RunOnce
+        exit 3
+    }
 
-# Added by aiDAPTIVClaw installer: prevent the sandbox VM from being killed by idle shutdown.
-[wsl2]
-vmIdleTimeout=-1
-"@
-    Set-Content -Path $wslConfigPath -Value $wslConfigContent -Encoding UTF8
-    Write-Log "  .wslconfig updated. Existing WSL distros will need 'wsl --shutdown' to apply."
-} else {
-    Write-Log "  .wslconfig already configured."
-}
+    # Set WSL default version
+    & wsl.exe --set-default-version 2 2>&1 | Out-Null
 
-# --- Step 5: First boot + smoke test ---
-Write-Log "[5/5] First boot + smoke test..."
-# Trigger boot (systemd starts openclaw-gateway.service automatically because it was systemctl enable'd in the rootfs)
-& wsl -d $DistroName -u root -e /bin/true
-Start-Sleep -Seconds 3
+    # Tarball check
+    if (-not (Test-Path $Tarball)) {
+        Show-FatalDialog "Missing rootfs" "Rootfs file not found: $Tarball"
+        Unregister-Phase2RunOnce
+        exit 1
+    }
+    Write-Log "Tarball OK ($([math]::Round((Get-Item $Tarball).Length / 1MB,1)) MB)"
 
-# Wait for the gateway HTTP endpoint to respond on Windows-side localhost (WSL2 auto-forwarding)
-$ready = $false
-for ($i = 0; $i -lt 30; $i++) {
-    try {
-        $resp = Invoke-WebRequest -Uri "http://localhost:18789/" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
-        if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 500) {
-            $ready = $true
-            break
+    # Idempotent import (drop previous distro first)
+    $existing = (& wsl.exe --list --quiet 2>&1) -split "`r?`n" | ForEach-Object { $_.Trim() }
+    if ($existing -contains $DistroName) {
+        Write-Log "Removing previous '$DistroName' distro..."
+        & wsl.exe --unregister $DistroName 2>&1 | Out-Null
+    }
+    if (-not (Test-Path $DistroDir)) {
+        New-Item -ItemType Directory -Path $DistroDir -Force | Out-Null
+    }
+    & wsl.exe --import $DistroName $DistroDir $Tarball --version 2 2>&1 | Tee-Object -FilePath $LogFile -Append
+    if ($LASTEXITCODE -ne 0) {
+        Show-FatalDialog "WSL import failed" "wsl --import failed. See $LogFile for details."
+        Unregister-Phase2RunOnce
+        exit 1
+    }
+    Write-Log "Distro imported"
+
+    # Patch %USERPROFILE%\.wslconfig (idempotent)
+    $wslConfigPath = Join-Path $env:USERPROFILE ".wslconfig"
+    $wslConfigContent = if (Test-Path $wslConfigPath) { Get-Content $wslConfigPath -Raw } else { "" }
+    if ($wslConfigContent -notmatch "(?ms)^\[wsl2\][^\[]*vmIdleTimeout") {
+        if ($wslConfigContent.Length -gt 0 -and -not $wslConfigContent.EndsWith("`n")) {
+            $wslConfigContent += "`r`n"
         }
-    } catch {
-        # Not ready yet
+        $wslConfigContent += "`r`n# Added by aiDAPTIVClaw installer: keep sandbox VM alive.`r`n[wsl2]`r`nvmIdleTimeout=-1`r`n"
+        Set-Content -Path $wslConfigPath -Value $wslConfigContent -Encoding UTF8
+        Write-Log ".wslconfig updated"
+        & wsl.exe --shutdown 2>&1 | Out-Null   # apply the new config
     }
-    Start-Sleep -Seconds 1
-}
-if (-not $ready) {
-    Write-Log "WARNING: gateway did not respond on http://localhost:18789 within 30s."
-    Write-Log "  Check: wsl -d $DistroName -u root -e systemctl status openclaw-gateway.service"
-    # Don't fail install: user may want to debug. Just warn.
-} else {
-    Write-Log "  Gateway is responding on http://localhost:18789."
+
+    # First boot: systemd auto-starts openclaw-gateway.service
+    & wsl.exe -d $DistroName -u root -e /bin/true 2>&1 | Out-Null
+    Start-Sleep -Seconds 3
+
+    # Wait for gateway
+    $ready = $false
+    for ($i = 0; $i -lt 30; $i++) {
+        try {
+            $resp = Invoke-WebRequest -Uri "http://localhost:18789/" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
+            if ($resp.StatusCode -lt 500) { $ready = $true; break }
+        } catch { }
+        Start-Sleep -Seconds 1
+    }
+    if (-not $ready) {
+        Write-Log "WARN: gateway did not respond within 30s"
+        Show-FatalDialog "Gateway didn't start" `
+            ("The OpenClaw gateway did not respond within 30 seconds.`n`n" +
+             "Diagnose with:`n" +
+             "  wsl -d $DistroName -u root -e systemctl status openclaw-gateway.service`n`n" +
+             "See $LogFile for details.")
+        Unregister-Phase2RunOnce
+        exit 1
+    }
+
+    # Open browser
+    $dashUrl = & wsl.exe -d $DistroName -u openclaw -e /opt/openclaw/bin/openclaw dashboard --print-url 2>$null
+    if ([string]::IsNullOrWhiteSpace($dashUrl)) { $dashUrl = "http://localhost:18789/" }
+    Start-Process $dashUrl.Trim()
+
+    Unregister-Phase2RunOnce
+    Write-Log "Phase 2 complete"
+    exit 0
 }
 
-Write-Log "=========================================="
-Write-Log "Setup complete!"
-Write-Log "=========================================="
-exit 0
+# ============================================================
+#  Entry
+# ============================================================
+try {
+    if (-not (Test-Path $AppDir)) { throw "AppDir does not exist: $AppDir" }
+    New-Item -ItemType File -Path $LogFile -Force | Out-Null
+
+    if ($Phase -eq '1') {
+        Invoke-Phase1
+    } else {
+        Invoke-Phase2
+    }
+} catch {
+    Write-Log "FATAL: $_"
+    Show-FatalDialog "aiDAPTIVClaw setup error" "$_`n`nSee $LogFile"
+    exit 1
+}
 ```
 
-**Step 2: Lint check the script**
+> **Note on `Show-FatalDialog`:** uses `System.Windows.MessageBox` from `PresentationFramework`. This is loaded on demand and requires .NET Framework 4.5+ (built into Win10 22H2). If for any reason WPF is not loadable, the script falls back to console output (still logged).
 
-Run:
+**Step 2: Lint check**
 
 ```powershell
 Invoke-ScriptAnalyzer installer\post-install.ps1
 ```
 
-Expected: no errors. Warnings about `Write-Host` are acceptable (we want console output for the user).
+Expected: no errors. `Write-Host` warnings are acceptable.
 
 If `Invoke-ScriptAnalyzer` is not installed: `Install-Module PSScriptAnalyzer -Scope CurrentUser`.
 
-**Step 3: Commit**
+**Step 3: Manual smoke test (host machine, with WSL already installed)**
 
-```bash
+```powershell
+mkdir -Force $env:TEMP\openclaw-smoke
+Copy-Item installer\post-install.ps1 $env:TEMP\openclaw-smoke\
+# Phase 1 should detect WSL is OK and short-circuit straight into Phase 2.
+# Without a real rootfs it will fail at "Missing rootfs" — that's expected.
+powershell -File $env:TEMP\openclaw-smoke\post-install.ps1 -AppDir $env:TEMP\openclaw-smoke -Phase 1
+```
+
+Expected: dialog "Missing rootfs" pops up. This proves Phase 1 → Phase 2 fall-through works.
+
+**Step 4: Commit**
+
+```powershell
 git add installer/post-install.ps1
-git commit -m "installer: add post-install.ps1 for WSL distro provisioning"
+git commit -m "installer: add dual-phase post-install.ps1 with WSL auto-install"
 ```
 
 ---
@@ -858,10 +1038,15 @@ git commit -m "installer: add post-install.ps1 for WSL distro provisioning"
 
 **Step 1: Replace `RunPostInstallBuild` procedure**
 
-In `installer/openclaw.iss`, find the `RunPostInstallBuild` procedure (around line 282-337). Replace it with:
+In `installer/openclaw.iss`, find the `RunPostInstallBuild` procedure (around line 282-337). Replace it with the dual-phase aware version:
 
 ```pascal
-{ --- Post-install: provision WSL sandbox --- }
+{ --- Post-install: provision WSL sandbox (Phase 1) ---
+  Phase 1 may either:
+    (a) Complete inline (WSL already present -> exit 0)
+    (b) Install WSL and request a reboot (exit 2; HKCU RunOnce already
+        registered by post-install.ps1 to fire Phase 2 after reboot)
+    (c) Fail prerequisites (exit 3) or other error (exit 1) }
 
 procedure RunPostInstallBuild;
 var
@@ -869,11 +1054,15 @@ var
   AppDir, LogFile, Params: String;
   ExecResult: Boolean;
 begin
+  NeedsReboot := False;
   BuildSucceeded := False;
   AppDir := ExpandConstant('{app}');
   LogFile := AppDir + '\install.log';
 
-  Params := '-NoProfile -ExecutionPolicy Bypass -File "' + AppDir + '\post-install.ps1" -AppDir "' + AppDir + '" -FromInstaller';
+  Params := '-NoProfile -ExecutionPolicy Bypass -File "' + AppDir + '\post-install.ps1"' +
+            ' -AppDir "' + AppDir + '"' +
+            ' -Phase 1' +
+            ' -FromInstaller';
 
   SaveStringToFile(LogFile, '=== Installer [Code] diagnostic ===' + #13#10, False);
   SaveStringToFile(LogFile, 'invocation: powershell.exe ' + Params + #13#10, True);
@@ -884,34 +1073,49 @@ begin
   ExecResult := Exec('powershell.exe', Params, AppDir,
                      SW_SHOWNORMAL, ewWaitUntilTerminated, ResultCode);
 
-  SaveStringToFile(LogFile, 'exec_result: ' + IntToStr(Ord(ExecResult)) + ', exit_code: ' + IntToStr(ResultCode) + #13#10, True);
+  SaveStringToFile(LogFile,
+                   'exec_result: ' + IntToStr(Ord(ExecResult)) +
+                   ', exit_code: ' + IntToStr(ResultCode) + #13#10, True);
 
   if ExecResult and (ResultCode = 0) then
   begin
+    { Phase 1 short-circuited into Phase 2 inline. All done. }
     BuildSucceeded := True;
   end
   else if ExecResult and (ResultCode = 2) then
   begin
-    { Special exit code from post-install.ps1: WSL was just installed, reboot required }
-    MsgBox('WSL2 was just installed.' + #13#10 + #13#10 +
-           'Please reboot Windows, then run:' + #13#10 +
-           '  ' + AppDir + '\post-install.ps1 -AppDir "' + AppDir + '"' + #13#10 + #13#10 +
-           'to complete the setup.',
-           mbInformation, MB_OK);
+    { WSL was just installed and a reboot is required.
+      RunOnce already registered by post-install.ps1.
+      Tell Inno Setup to suggest a reboot at the end of the wizard. }
+    NeedsReboot := True;
+    BuildSucceeded := True;  { not really a failure — just needs reboot }
+  end
+  else if ExecResult and (ResultCode = 3) then
+  begin
+    { Hard prerequisite failure (no VT-x / unsupported Windows).
+      post-install.ps1 already showed a dialog. Mark as failed so Inno
+      Setup ends with an error wizard page. }
     BuildSucceeded := False;
   end
   else
   begin
     MsgBox('WSL sandbox provisioning failed (exit code: ' + IntToStr(ResultCode) + ').' + #13#10 + #13#10 +
-           'Check the log file:' + #13#10 +
-           LogFile + #13#10 + #13#10 +
-           'You can retry by running:' + #13#10 +
-           'powershell.exe -File "' + AppDir + '\post-install.ps1" -AppDir "' + AppDir + '"',
+           'Check the log file:' + #13#10 + LogFile + #13#10 + #13#10 +
+           'You can retry from PowerShell:' + #13#10 +
+           '  powershell -File "' + AppDir + '\post-install.ps1" -AppDir "' + AppDir + '" -Phase 1',
            mbError, MB_OK);
     BuildSucceeded := False;
   end;
 end;
+
+{ Tell Inno Setup whether to add a "reboot now" prompt at the end. }
+function NeedRestart(): Boolean;
+begin
+  Result := NeedsReboot;
+end;
 ```
+
+Add `NeedsReboot: Boolean;` to the existing `var` declaration block at the top of the `[Code]` section.
 
 **Step 2: Remove `InstallDaemon` and `ConfigureCloudProvider` procedures (and their call sites)**
 
@@ -1419,25 +1623,81 @@ Expected: hint message present.
 ### Task 5.1: Update README and user docs
 
 **Files:**
-- Modify (or create): `docs/install/windows.md`
+- Create: `docs/install/windows.md`
+
+**Required anchors (the post-install.ps1 dialogs link to these):**
+- `#bios` — how to enable virtualization in BIOS
+- `#wsl-install-failed` — what to do if the auto WSL install failed
 
 **Step 1: Document the new install experience**
 
-Cover:
-- Prerequisites: Win10 2004+ or Win11; CPU virtualization enabled in BIOS
-- What happens during install (WSL distro import, ~5 min)
-- Where the workspace lives: `\\wsl.localhost\aidaptivclaw\home\openclaw\workspace` (with screenshot showing how to pin it in Explorer)
-- How to authorize a Windows folder for read-only access (when D-2 is implemented; for now: not yet supported, file Issue #...)
-- How to uninstall (auto-unregisters distro)
-- Troubleshooting:
-  - "Gateway did not respond on port 18789" → check `wsl -d aidaptivclaw -u root -e systemctl status openclaw-gateway.service`
-  - "wsl --import failed" → enable virtualization in BIOS / install Hyper-V
+Sections to cover:
+
+1. **Prerequisites**
+   - Windows 10 22H2 or Windows 11 (22H2+ recommended)
+   - CPU virtualization (Intel VT-x / AMD-V) enabled in BIOS — see `#bios`
+   - Internet connection during install (for WSL2 kernel download if not already present)
+   - ~2GB free disk space on system drive
+
+2. **What the installer does**
+   - Phase 1: prerequisite checks; if WSL2 missing, runs `wsl --install --no-distribution` and asks for a reboot
+   - After reboot: Phase 2 fires automatically via Windows RunOnce on first logon
+   - Phase 2: imports the bundled rootfs as a private WSL distro `aidaptivclaw`, configures `.wslconfig`, boots the distro, opens browser to dashboard
+   - Total user time: ~3 minutes (no reboot path) or ~5 minutes (with reboot)
+
+3. **Where the workspace lives**
+   - Inside WSL: `/home/openclaw/workspace`
+   - From Windows Explorer: `\\wsl.localhost\aidaptivclaw\home\openclaw\workspace`
+   - Include screenshot of how to pin this UNC path in Explorer Quick Access
+
+4. **Authorizing Windows folders for read-only access**
+   - Currently NOT supported in MVP (D-2 follow-up). Document the manual workaround: copy files into the workspace UNC path.
+
+5. **How to uninstall**
+   - Control Panel → uninstall. The uninstaller automatically `wsl --unregister aidaptivclaw`, which destroys the sandbox VM and all data inside it.
+
+6. **<a id="bios"></a>Enabling virtualization in BIOS**
+   Step-by-step with example screenshots:
+   - Reboot, press the key shown briefly on boot (commonly F2, Del, F10, F12, Esc)
+   - Look under: `Advanced` → `CPU Configuration` (Intel) or `Advanced` → `CPU Features` (AMD)
+   - Enable: `Intel Virtualization Technology` / `Intel VT-x` / `Intel VMX` OR `SVM Mode` / `AMD-V`
+   - Some OEMs (Lenovo, HP) hide the option under `Security` instead of `Advanced`
+   - Save (commonly F10) → reboot → re-run the installer
+   - Verify in PowerShell: `(Get-CimInstance Win32_Processor).VirtualizationFirmwareEnabled` should return `True`
+
+7. **<a id="wsl-install-failed"></a>WSL auto-install failed**
+   Three common causes and remediation:
+
+   - **No internet at install time.** Manually run as Administrator:
+     ```powershell
+     wsl --install --no-distribution
+     ```
+     then reboot, then re-run the aiDAPTIVClaw installer.
+
+   - **Group Policy / corporate IT blocks Windows Optional Features.** Ask IT to enable:
+     ```
+     Computer Configuration > Administrative Templates > Windows Components >
+       Hyper-V > "Allow Hyper-V to be enabled"
+     ```
+     and the **Windows Subsystem for Linux** Windows Feature.
+     If IT cannot help, the product will not work on this machine.
+
+   - **Antivirus blocks the installer.** Whitelist `aidaptiv-claw-setup.exe` and `wsl.exe`.
+
+8. **General troubleshooting**
+   - "Gateway did not respond on port 18789" → run:
+     ```powershell
+     wsl -d aidaptivclaw -u root -e systemctl status openclaw-gateway.service
+     wsl -d aidaptivclaw -u root -e journalctl -u openclaw-gateway.service -n 100
+     ```
+   - "Sandbox VM keeps shutting down after a minute" → check `%USERPROFILE%\.wslconfig` contains `vmIdleTimeout=-1`.
+   - To start fresh: `wsl --unregister aidaptivclaw` then re-run the installer.
 
 **Step 2: Commit**
 
-```bash
+```powershell
 git add docs/install/windows.md
-git commit -m "docs: document WSL2 sandbox install on Windows"
+git commit -m "docs: document WSL2 sandbox install + BIOS / WSL troubleshooting"
 ```
 
 ---
