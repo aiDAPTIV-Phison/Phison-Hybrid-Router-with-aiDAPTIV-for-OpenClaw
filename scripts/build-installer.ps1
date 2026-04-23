@@ -3,40 +3,42 @@
     Build the aiDAPTIVClaw Windows installer (.exe) using Inno Setup.
 
 .DESCRIPTION
-    This script packages the OpenClaw source code and Node.js into
-    an installer that will build on the customer's machine (online install).
+    Pipeline (WSL2 sandbox flavor):
+      1. Validate Inno Setup Compiler is installed.
+      2. Ensure installer/rootfs/aidaptivclaw.tar.gz exists; build it via
+         scripts/build-rootfs.ps1 if missing or if -ForceRebuildRootfs.
+      3. Run Inno Setup Compiler against installer/openclaw.iss.
 
-    Pipeline:
-    1. Validates required tools (Inno Setup Compiler)
-    2. Downloads Node.js 24 LTS if not cached
-    3. Stages source code into installer/build/ (excludes node_modules, .git, tests)
-    4. Runs Inno Setup Compiler to produce the final .exe
+    The legacy "stage source + ship Node.js + build on customer machine"
+    pipeline was retired with the WSL2 redesign — source code, Node.js,
+    pnpm and the OpenClaw build artifacts are all baked into the rootfs.
 
 .PARAMETER AppVersion
-    Custom version number for the installer. If not specified, reads from package.json.
+    Version stamped into the installer. Falls back to package.json version.
 
-.PARAMETER NodeVersion
-    Node.js version to embed. Default: 24.0.0
+.PARAMETER ForceRebuildRootfs
+    Rebuild the rootfs even if installer/rootfs/aidaptivclaw.tar.gz
+    already exists. Useful after editing provision.sh / wsl.conf /
+    openclaw-gateway.service.
 
 .EXAMPLE
     .\scripts\build-installer.ps1
     .\scripts\build-installer.ps1 -AppVersion 1.0.0
-    .\scripts\build-installer.ps1 -AppVersion 1.0.0 -NodeVersion 24.1.0
+    .\scripts\build-installer.ps1 -ForceRebuildRootfs
 #>
-
 param(
     [string]$AppVersion = "",
-    [string]$NodeVersion = "24.0.0"
+    [switch]$ForceRebuildRootfs
 )
 
 $ErrorActionPreference = "Stop"
-$RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-$InstallerDir = Join-Path $RepoRoot "installer"
-$BuildDir = Join-Path $InstallerDir "build"
-$OutputDir = Join-Path $InstallerDir "output"
-$NodeCacheDir = Join-Path $InstallerDir ".node-cache"
+$RepoRoot      = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+$InstallerDir  = Join-Path $RepoRoot "installer"
+$RootfsDir     = Join-Path $InstallerDir "rootfs"
+$RootfsTarball = Join-Path $RootfsDir "aidaptivclaw.tar.gz"
+$OutputDir     = Join-Path $InstallerDir "output"
+$IssFile       = Join-Path $InstallerDir "openclaw.iss"
 
-# Use custom version or fall back to package.json
 if (-not $AppVersion) {
     $PackageJson = Get-Content (Join-Path $RepoRoot "package.json") -Raw | ConvertFrom-Json
     $AppVersion = $PackageJson.version
@@ -46,12 +48,12 @@ Write-Host ""
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "  aiDAPTIVClaw Installer Builder"           -ForegroundColor Cyan
 Write-Host "  Version: $AppVersion"                      -ForegroundColor Cyan
-Write-Host "  Mode: Online (build on target)"            -ForegroundColor Cyan
+Write-Host "  Mode: WSL2 sandbox (offline rootfs)"       -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 
 # --- Step 0: Validate tools ---
-Write-Host "[Step 0] Validating required tools..." -ForegroundColor Yellow
+Write-Host "[Step 0] Validating tools..." -ForegroundColor Yellow
 
 $IsccPaths = @(
     "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
@@ -59,10 +61,7 @@ $IsccPaths = @(
 )
 $IsccPath = $null
 foreach ($p in $IsccPaths) {
-    if (Test-Path $p) {
-        $IsccPath = $p
-        break
-    }
+    if (Test-Path $p) { $IsccPath = $p; break }
 }
 if (Get-Command iscc -ErrorAction SilentlyContinue) {
     $IsccPath = (Get-Command iscc).Source
@@ -73,114 +72,40 @@ if (-not $IsccPath) {
 }
 Write-Host "  Inno Setup: OK ($IsccPath)" -ForegroundColor Green
 
-# --- Step 1: Download Node.js ---
+# --- Step 1: Ensure rootfs tarball exists ---
 Write-Host ""
-Write-Host "[Step 1] Preparing Node.js $NodeVersion..." -ForegroundColor Yellow
+Write-Host "[Step 1] Preparing WSL rootfs..." -ForegroundColor Yellow
 
-if (-not (Test-Path $NodeCacheDir)) {
-    New-Item -ItemType Directory -Path $NodeCacheDir -Force | Out-Null
+if ($ForceRebuildRootfs -and (Test-Path $RootfsTarball)) {
+    Write-Host "  -ForceRebuildRootfs set; deleting existing tarball."
+    Remove-Item $RootfsTarball -Force
 }
 
-$NodeExeCache = Join-Path $NodeCacheDir "node-v$NodeVersion.exe"
-if (Test-Path $NodeExeCache) {
-    Write-Host "  Using cached Node.js binary."
-} else {
-    $NodeUrl = "https://nodejs.org/dist/v$NodeVersion/win-x64/node.exe"
-    Write-Host "  Downloading Node.js from $NodeUrl..."
-    try {
-        Invoke-WebRequest -Uri $NodeUrl -OutFile $NodeExeCache -UseBasicParsing
-    }
-    catch {
-        Write-Error "Failed to download Node.js. Check version $NodeVersion is valid."
+if (-not (Test-Path $RootfsTarball)) {
+    Write-Host "  Rootfs not found; running scripts/build-rootfs.ps1 (15-25 min cold, 5-10 min warm)..."
+    & (Join-Path $RepoRoot "scripts\build-rootfs.ps1")
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Rootfs build failed. See output above."
         exit 1
     }
 }
-Write-Host "  Node.js ready." -ForegroundColor Green
 
-# --- Step 2: Stage source code ---
-Write-Host ""
-Write-Host "[Step 2] Staging source code..." -ForegroundColor Yellow
-
-if (Test-Path $BuildDir) {
-    Write-Host "  Cleaning previous build..."
-    Remove-Item -Recurse -Force $BuildDir
+if (-not (Test-Path $RootfsTarball)) {
+    Write-Error "Expected $RootfsTarball after build, but it is missing."
+    exit 1
 }
-New-Item -ItemType Directory -Path $BuildDir -Force | Out-Null
+
+$RootfsSizeMb = [math]::Round((Get-Item $RootfsTarball).Length / 1MB, 1)
+Write-Host "  Rootfs ready: $RootfsTarball ($RootfsSizeMb MB)" -ForegroundColor Green
+
+# --- Step 2: Run Inno Setup Compiler ---
+Write-Host ""
+Write-Host "[Step 2] Building installer..." -ForegroundColor Yellow
 
 if (-not (Test-Path $OutputDir)) {
     New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 }
 
-# Copy Node.js binary
-Write-Host "  Copying Node.js binary..."
-Copy-Item $NodeExeCache (Join-Path $BuildDir "node.exe")
-
-# Copy root files needed for build
-$IncludeFiles = @(
-    "package.json", "pnpm-workspace.yaml", "pnpm-lock.yaml",
-    "openclaw.mjs", "tsconfig.json", "tsconfig.plugin-sdk.dts.json",
-    "tsdown.config.ts", ".npmrc", "LICENSE"
-)
-Write-Host "  Copying root config files..."
-foreach ($file in $IncludeFiles) {
-    $srcPath = Join-Path $RepoRoot $file
-    if (Test-Path $srcPath) {
-        Copy-Item $srcPath (Join-Path $BuildDir $file)
-    }
-}
-
-# Use robocopy to copy directories while excluding node_modules, .git, dist, etc.
-# robocopy exits with codes 0-7 for success; 8+ for errors
-$ExcludeDirs = @("node_modules", ".git", "dist", ".next", ".build", "__pycache__", ".pnpm", "build")
-$ExcludeFiles = @("*.test.ts", "*.e2e.test.ts", "*.spec.ts")
-$RobocopyExclDirs = ($ExcludeDirs | ForEach-Object { "/XD" ; $_ })
-$RobocopyExclFiles = ($ExcludeFiles | ForEach-Object { "/XF" ; $_ })
-
-$CopyDirs = @("src", "ui", "extensions", "packages", "scripts", "patches", "vendor", "skills")
-
-# Extra subdirectories needed for build (a2ui canvas bundle)
-$ExtraSubDirs = @(
-    "apps\shared\OpenClawKit\Tools\CanvasA2UI",
-    "apps\shared\OpenClawKit\Sources\OpenClawKit\Resources",
-    "docs\reference\templates"
-)
-
-foreach ($dir in $CopyDirs) {
-    $srcPath = Join-Path $RepoRoot $dir
-    $destPath = Join-Path $BuildDir $dir
-    if (Test-Path $srcPath) {
-        Write-Host "  Copying $dir/ (excluding node_modules)..."
-        $robocopyArgs = @($srcPath, $destPath, "/E", "/NFL", "/NDL", "/NJH", "/NJS", "/NC", "/NS", "/NP") + $RobocopyExclDirs + $RobocopyExclFiles
-        & robocopy @robocopyArgs | Out-Null
-        $rc = $LASTEXITCODE
-        if ($rc -ge 8) {
-            Write-Error "robocopy failed for $dir (exit code $rc)"
-            exit 1
-        }
-    }
-}
-
-# Copy extra subdirectories
-foreach ($subDir in $ExtraSubDirs) {
-    $srcPath = Join-Path $RepoRoot $subDir
-    $destPath = Join-Path $BuildDir $subDir
-    if (Test-Path $srcPath) {
-        Write-Host "  Copying $subDir/..."
-        New-Item -ItemType Directory -Path (Split-Path $destPath -Parent) -Force | Out-Null
-        $robocopyArgs = @($srcPath, $destPath, "/E", "/NFL", "/NDL", "/NJH", "/NJS", "/NC", "/NS", "/NP") + $RobocopyExclDirs + $RobocopyExclFiles
-        & robocopy @robocopyArgs | Out-Null
-    }
-}
-
-$StagedSize = [math]::Round(((Get-ChildItem -Path $BuildDir -Recurse -File | Measure-Object -Property Length -Sum).Sum / 1MB), 1)
-$StagedCount = (Get-ChildItem -Path $BuildDir -Recurse -File | Measure-Object).Count
-Write-Host "  Staged: $StagedCount files, $StagedSize MB" -ForegroundColor Green
-
-# --- Step 3: Run Inno Setup Compiler ---
-Write-Host ""
-Write-Host "[Step 3] Building installer..." -ForegroundColor Yellow
-
-$IssFile = Join-Path $InstallerDir "openclaw.iss"
 & $IsccPath "/DAppVersion=$AppVersion" $IssFile
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Inno Setup compilation failed."

@@ -1,19 +1,48 @@
 @echo off
-cd /d "%~dp0"
+setlocal
 
-:: Start the gateway in a minimized window
-start /min "aiDAPTIVClaw Gateway" "%~dp0node.exe" "%~dp0openclaw.mjs" gateway run --port 18789 --bind loopback
+REM aiDAPTIVClaw launcher (WSL2 sandbox edition).
+REM
+REM 1. Wake the `aidaptivclaw` WSL distro. systemd starts the gateway
+REM    automatically (openclaw-gateway.service is enabled in the rootfs).
+REM 2. Wait until the gateway responds on localhost:18789. WSL2 default
+REM    localhost forwarding bridges Linux loopback to Windows loopback.
+REM 3. Ask the gateway for the dashboard URL with auth token.
+REM 4. Open it in the user's default browser.
+REM
+REM Invoked from openclaw-launcher.vbs (so no console window flashes).
 
-:: Wait for the gateway to be ready (up to 30 seconds)
-:: Uses a single Node.js process instead of repeated PowerShell invocations for speed
-"%~dp0node.exe" -e "const net=require('net');let t=0;const i=setInterval(()=>{const s=new net.Socket();s.setTimeout(500);s.on('connect',()=>{s.destroy();clearInterval(i);process.exit(0)});s.on('error',()=>s.destroy());s.on('timeout',()=>s.destroy());s.connect(18789,'127.0.0.1');t++;if(t>=30){clearInterval(i);process.exit(1)}},1000)"
+set DISTRO=aidaptivclaw
+set GATEWAY_URL=http://localhost:18789/
+set FALLBACK_URL=http://localhost:18789/
+
+REM 1. Boot the distro (silent no-op command). Triggers systemd if cold.
+wsl.exe -d %DISTRO% -u root -e /bin/true >nul 2>&1
 if errorlevel 1 (
-    echo [aiDAPTIVClaw] Gateway failed to start within 30 seconds.
-    echo [aiDAPTIVClaw] Port 18789 may already be in use.
-    echo [aiDAPTIVClaw] Please check and try again.
+    echo [aiDAPTIVClaw] WSL distro "%DISTRO%" not found. Reinstall aiDAPTIVClaw.
     timeout /t 10 /nobreak >nul
     exit /b 1
 )
 
-:: Gateway is ready, open the browser with auth token
-"%~dp0node.exe" "%~dp0openclaw.mjs" dashboard
+REM 2. Wait up to 30 s for gateway port. PowerShell one-liner is faster
+REM    than spawning 30 separate curl/Test-NetConnection invocations.
+powershell -NoProfile -Command "for ($i=0;$i -lt 30;$i++) { try { $r = Invoke-WebRequest -Uri '%GATEWAY_URL%' -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop; if ($r.StatusCode -lt 500) { exit 0 } } catch { } ; Start-Sleep 1 } ; exit 1"
+if errorlevel 1 (
+    echo [aiDAPTIVClaw] Gateway failed to start within 30 seconds.
+    echo [aiDAPTIVClaw] Diagnose: wsl -d %DISTRO% -u root -e systemctl status openclaw-gateway.service
+    timeout /t 10 /nobreak >nul
+    exit /b 1
+)
+
+REM 3. Get the dashboard URL with embedded auth token. The CLI runs as
+REM    the non-root `openclaw` user inside the distro. If --print-url
+REM    isn't available (older build), fall back to the bare URL — the
+REM    user will be prompted for the token in the browser UI.
+for /f "usebackq delims=" %%U in (`wsl.exe -d %DISTRO% -u openclaw -e /opt/node/bin/node /opt/openclaw/openclaw.mjs dashboard --print-url 2^>nul`) do set DASH_URL=%%U
+if not defined DASH_URL set DASH_URL=%FALLBACK_URL%
+
+REM 4. Open in the default browser (start "" lets the URL contain "&").
+start "" "%DASH_URL%"
+
+endlocal
+exit /b 0
