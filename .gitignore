@@ -125,6 +125,10 @@ dist/protocol.schema.json
 installer/build/
 installer/output/
 installer/.node-cache/
+# WSL rootfs build artifacts (see scripts/build-rootfs.ps1)
+installer/rootfs/.cache/
+installer/rootfs/*.tar
+installer/rootfs/*.tar.gz
 
 # Synthing
 **/.stfolder/
