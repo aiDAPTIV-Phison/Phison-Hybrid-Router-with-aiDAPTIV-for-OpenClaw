@@ -46,7 +46,7 @@
       "models": {
         "openrouter/google/gemini-3.1-flash-lite-preview": {}
       },
-      "workspace": "C:\\Users\\user\\.openclaw\\workspace",
+      "workspace": "/home/openclaw/workspace",
       "compaction": {
         "mode": "safeguard"
       }
