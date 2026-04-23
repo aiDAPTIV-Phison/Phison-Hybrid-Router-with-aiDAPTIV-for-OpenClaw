@@ -1,8 +1,13 @@
-; aiDAPTIVClaw Windows Installer - Inno Setup Script (Online Install)
-; The installer extracts source code + Node.js, then runs build steps
-; on the customer's machine.
+; aiDAPTIVClaw Windows Installer - Inno Setup Script (WSL2 sandbox)
+;
+; Ships a pre-built Ubuntu 24.04 WSL rootfs containing OpenClaw under
+; /opt/openclaw, plus a PowerShell post-install script that imports the
+; rootfs as a private WSL distro `aidaptivclaw` running as a non-root user
+; with systemd hardening.
 ;
 ; Build with: iscc.exe /DAppVersion=x.x.x openclaw.iss
+;
+; Design plan: docs/plans/2026-04-23-wsl-sandbox-design.md
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -16,13 +21,15 @@ AppVerName=aiDAPTIVClaw {#AppVersion}
 AppPublisher=aiDAPTIV
 AppPublisherURL=https://github.com/openclaw/openclaw
 AppSupportURL=https://github.com/openclaw/openclaw/issues
-DefaultDirName={localappdata}\aiDAPTIVClaw
+DefaultDirName={commonpf}\aiDAPTIVClaw
 DefaultGroupName=aiDAPTIVClaw
 OutputDir=output
 OutputBaseFilename=aidaptiv-claw-setup-{#AppVersion}
 Compression=lzma2/ultra64
 SolidCompression=yes
-PrivilegesRequired=lowest
+; Admin required: wsl --install and wsl --import need elevation,
+; and we write to ProgramData and Program Files.
+PrivilegesRequired=admin
 SetupIconFile=Gemini_Generated_Image_aiDAPTIV.ico
 UninstallDisplayIcon={app}\Gemini_Generated_Image_aiDAPTIV.ico
 WizardStyle=modern
@@ -38,18 +45,20 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional options:"
 Name: "startmenuicon"; Description: "Create a Start Menu shortcut"; GroupDescription: "Additional options:"; Flags: checkedonce
-Name: "installdaemon"; Description: "Start gateway automatically on login"; GroupDescription: "Additional options:"; Flags: checkedonce
 
 [Files]
-; Source code + Node.js (staged by build-installer.ps1)
-Source: "build\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Pre-built WSL rootfs (produced by scripts/build-rootfs.ps1).
+; Imported by post-install.ps1 as the `aidaptivclaw` distro.
+Source: "rootfs\aidaptivclaw.tar.gz"; DestDir: "{app}\rootfs"; Flags: ignoreversion
+
+; PowerShell provisioning script (runs in two phases — see post-install.ps1 header).
+Source: "post-install.ps1"; DestDir: "{app}"; Flags: ignoreversion
+
 ; Launcher and helpers
 Source: "openclaw-launcher.vbs"; DestDir: "{app}"; Flags: ignoreversion
 Source: "openclaw-launcher.cmd"; DestDir: "{app}"; Flags: ignoreversion
-Source: "post-install.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "openclaw-template.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "Gemini_Generated_Image_aiDAPTIV.ico"; DestDir: "{app}"; Flags: ignoreversion
-Source: "configure-cloud.cjs"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{userdesktop}\aiDAPTIVClaw"; Filename: "{app}\openclaw-launcher.vbs"; IconFilename: "{app}\Gemini_Generated_Image_aiDAPTIV.ico"; Tasks: desktopicon
@@ -57,157 +66,21 @@ Name: "{group}\aiDAPTIVClaw"; Filename: "{app}\openclaw-launcher.vbs"; IconFilen
 Name: "{group}\Uninstall aiDAPTIVClaw"; Filename: "{uninstallexe}"; Tasks: startmenuicon
 
 [Run]
-; Post-install build and daemon install are handled in [Code] section (CurStepChanged)
-; so we can check exit codes and abort on failure.
-; Only the optional post-install launch remains here.
-Filename: "{app}\openclaw-launcher.vbs"; Description: "Launch aiDAPTIVClaw"; Flags: nowait postinstall skipifsilent shellexec
-
-[UninstallRun]
-; Remove daemon scheduled task on uninstall
-Filename: "{app}\node.exe"; Parameters: """{app}\openclaw.mjs"" gateway daemon uninstall"; WorkingDir: "{app}"; Flags: waituntilterminated runhidden
+; Optional post-install launch; only runs if WSL setup completed without
+; needing a reboot (NeedsReboot=False). Otherwise the user reboots and
+; HKCU RunOnce fires Phase 2 + opens the browser automatically.
+Filename: "{app}\openclaw-launcher.vbs"; Description: "Launch aiDAPTIVClaw"; Flags: nowait postinstall skipifsilent shellexec; Check: NotNeedsReboot
 
 [UninstallDelete]
-; Remove build artifacts and dependencies not tracked by installer
-Type: filesandordirs; Name: "{app}\node_modules"
-Type: filesandordirs; Name: "{app}\dist"
-Type: filesandordirs; Name: "{app}\.pnpm-store"
+; Files left around after Phase 2 / runtime that aren't tracked by the installer.
 Type: files; Name: "{app}\install.log"
 
 [Code]
 var
   BuildSucceeded: Boolean;
-  CloudPage: TWizardPage;
-  ProviderCombo: TNewComboBox;
-  ApiKeyEdit: TNewEdit;
-  ModelEdit: TNewEdit;
+  NeedsReboot: Boolean;
 
-{ --- Provider data helpers --- }
-
-function GetProviderId(Idx: Integer): String;
-begin
-  case Idx of
-    0: Result := 'openrouter';
-    1: Result := 'google';
-    2: Result := 'anthropic';
-    3: Result := 'openai';
-    4: Result := 'together';
-  else
-    Result := 'openrouter';
-  end;
-end;
-
-function GetProviderBaseUrl(Idx: Integer): String;
-begin
-  case Idx of
-    0: Result := 'https://openrouter.ai/api/v1';
-    1: Result := 'https://generativelanguage.googleapis.com/v1beta';
-    2: Result := 'https://api.anthropic.com';
-    3: Result := 'https://api.openai.com/v1';
-    4: Result := 'https://api.together.xyz/v1';
-  else
-    Result := 'https://openrouter.ai/api/v1';
-  end;
-end;
-
-function GetProviderApi(Idx: Integer): String;
-begin
-  case Idx of
-    0: Result := 'openai-completions';
-    1: Result := 'google-generative-ai';
-    2: Result := 'anthropic-messages';
-    3: Result := 'openai-completions';
-    4: Result := 'openai-completions';
-  else
-    Result := 'openai-completions';
-  end;
-end;
-
-function GetProviderDefaultModel(Idx: Integer): String;
-begin
-  case Idx of
-    0: Result := 'google/gemini-2.5-flash';
-    1: Result := 'gemini-2.5-flash';
-    2: Result := 'claude-sonnet-4-20250514';
-    3: Result := 'gpt-4o';
-    4: Result := 'meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8';
-  else
-    Result := 'google/gemini-2.5-flash';
-  end;
-end;
-
-{ --- Cloud config page events --- }
-
-procedure ProviderComboChange(Sender: TObject);
-begin
-  ModelEdit.Text := GetProviderDefaultModel(ProviderCombo.ItemIndex);
-end;
-
-{ --- Wizard initialization: create the cloud config page --- }
-
-procedure InitializeWizard;
-var
-  LblProvider, LblApiKey, LblModel, LblSkip: TNewStaticText;
-begin
-  CloudPage := CreateCustomPage(wpSelectTasks,
-    'Cloud Model Provider',
-    'Configure the cloud model provider for hybrid-gateway (optional).');
-
-  LblSkip := TNewStaticText.Create(CloudPage);
-  LblSkip.Parent := CloudPage.Surface;
-  LblSkip.Caption := 'Leave API Key empty to skip. You can configure this later via the Control UI.';
-  LblSkip.Top := 0;
-  LblSkip.Left := 0;
-  LblSkip.Width := CloudPage.SurfaceWidth;
-  LblSkip.AutoSize := True;
-
-  LblProvider := TNewStaticText.Create(CloudPage);
-  LblProvider.Parent := CloudPage.Surface;
-  LblProvider.Caption := 'Cloud Provider:';
-  LblProvider.Top := ScaleY(40);
-  LblProvider.Left := 0;
-
-  ProviderCombo := TNewComboBox.Create(CloudPage);
-  ProviderCombo.Parent := CloudPage.Surface;
-  ProviderCombo.Top := ScaleY(62);
-  ProviderCombo.Left := 0;
-  ProviderCombo.Width := CloudPage.SurfaceWidth;
-  ProviderCombo.Style := csDropDownList;
-  ProviderCombo.Items.Add('OpenRouter');
-  ProviderCombo.Items.Add('Google Gemini');
-  ProviderCombo.Items.Add('Anthropic (Claude)');
-  ProviderCombo.Items.Add('OpenAI');
-  ProviderCombo.Items.Add('Together AI');
-  ProviderCombo.ItemIndex := 0;
-  ProviderCombo.OnChange := @ProviderComboChange;
-
-  LblApiKey := TNewStaticText.Create(CloudPage);
-  LblApiKey.Parent := CloudPage.Surface;
-  LblApiKey.Caption := 'API Key:';
-  LblApiKey.Top := ScaleY(102);
-  LblApiKey.Left := 0;
-
-  ApiKeyEdit := TNewEdit.Create(CloudPage);
-  ApiKeyEdit.Parent := CloudPage.Surface;
-  ApiKeyEdit.Top := ScaleY(124);
-  ApiKeyEdit.Left := 0;
-  ApiKeyEdit.Width := CloudPage.SurfaceWidth;
-  ApiKeyEdit.Text := '';
-
-  LblModel := TNewStaticText.Create(CloudPage);
-  LblModel.Parent := CloudPage.Surface;
-  LblModel.Caption := 'Default Model:';
-  LblModel.Top := ScaleY(164);
-  LblModel.Left := 0;
-
-  ModelEdit := TNewEdit.Create(CloudPage);
-  ModelEdit.Parent := CloudPage.Surface;
-  ModelEdit.Top := ScaleY(186);
-  ModelEdit.Left := 0;
-  ModelEdit.Width := CloudPage.SurfaceWidth;
-  ModelEdit.Text := GetProviderDefaultModel(0);
-end;
-
-{ --- String replace utility --- }
+{ --- String replace utility (used by WriteConfigFile) --- }
 
 function ReplaceSubstring(const S, OldPattern, NewPattern: String): String;
 var
@@ -230,7 +103,10 @@ begin
   Result := Result_;
 end;
 
-{ --- Write config file from template --- }
+{ --- Write host-side config file from template ---
+  The host-side openclaw.json under %USERPROFILE%\.openclaw\ is kept for
+  backward compat with the Windows CLI; the gateway running inside WSL
+  reads its own config from /home/openclaw/.openclaw/openclaw.json. }
 
 procedure WriteConfigFile;
 var
@@ -252,9 +128,6 @@ begin
   if not DirExists(ConfigDir) then
     ForceDirectories(ConfigDir);
 
-  if not DirExists(ConfigDir + '\workspace') then
-    ForceDirectories(ConfigDir + '\workspace');
-
   if LoadStringsFromFile(TemplateFile, Lines) then
   begin
     Content := '';
@@ -265,7 +138,8 @@ begin
       Content := Content + Lines[I];
     end;
 
-    Content := ReplaceSubstring(Content, 'C:\\Users\\user\\', ReplaceSubstring(UserProfile, '\', '\\') + '\\');
+    { The template now stores WSL-native paths; no Windows path
+      substitution needed. Only the version metadata gets bumped. }
     Content := ReplaceSubstring(Content, '"lastTouchedVersion": "2026.3.12"', '"lastTouchedVersion": "' + '{#AppVersion}' + '"');
     Content := ReplaceSubstring(Content, '"lastRunVersion": "2026.3.12"', '"lastRunVersion": "' + '{#AppVersion}' + '"');
 
@@ -277,151 +151,69 @@ begin
   end;
 end;
 
-{ --- Post-install build --- }
+{ --- Post-install: run dual-phase post-install.ps1 (Phase 1) --- }
 
 procedure RunPostInstallBuild;
 var
   ResultCode: Integer;
-  AppDir, LogFile, CmdExe, Params: String;
+  AppDir, LogFile, Params: String;
   ExecResult: Boolean;
 begin
   BuildSucceeded := False;
+  NeedsReboot := False;
   AppDir := ExpandConstant('{app}');
   LogFile := AppDir + '\install.log';
-  CmdExe := ExpandConstant('{cmd}');
 
-  Params := '/C ""' + AppDir + '\post-install.cmd" "' + AppDir + '" --from-installer"';
+  Params := '-NoProfile -ExecutionPolicy Bypass -File "' + AppDir + '\post-install.ps1"' +
+            ' -AppDir "' + AppDir + '"' +
+            ' -Phase 1' +
+            ' -FromInstaller';
 
   SaveStringToFile(LogFile, '=== Installer [Code] diagnostic ===' + #13#10, False);
-  SaveStringToFile(LogFile, 'cmd: ' + CmdExe + #13#10, True);
-  SaveStringToFile(LogFile, 'params: ' + Params + #13#10, True);
+  SaveStringToFile(LogFile, 'invocation: powershell.exe ' + Params + #13#10, True);
   SaveStringToFile(LogFile, 'workdir: ' + AppDir + #13#10, True);
 
-  WizardForm.StatusLabel.Caption := 'Building aiDAPTIVClaw (see the console window for progress)...';
+  WizardForm.StatusLabel.Caption := 'Provisioning WSL sandbox (this may take a few minutes)...';
   WizardForm.Refresh;
 
-  ExecResult := Exec(CmdExe, Params, AppDir,
+  ExecResult := Exec('powershell.exe', Params, AppDir,
                      SW_SHOWNORMAL, ewWaitUntilTerminated, ResultCode);
 
-  SaveStringToFile(LogFile, 'exec_result: ' + IntToStr(Ord(ExecResult)) + ', exit_code: ' + IntToStr(ResultCode) + #13#10, True);
+  SaveStringToFile(LogFile,
+                   'exec_result: ' + IntToStr(Ord(ExecResult)) +
+                   ', exit_code: ' + IntToStr(ResultCode) + #13#10, True);
 
-  if ExecResult then
+  if ExecResult and (ResultCode = 0) then
   begin
-    if ResultCode = 0 then
-    begin
-      BuildSucceeded := True;
-      Log('Post-install build succeeded');
-    end
-    else
-    begin
-      Log('Post-install build failed with exit code: ' + IntToStr(ResultCode));
-      MsgBox('Build failed (exit code: ' + IntToStr(ResultCode) + ').' + #13#10 + #13#10 +
-             'Check the log file for details:' + #13#10 +
-             LogFile + #13#10 + #13#10 +
-             'You can retry later by running:' + #13#10 +
-             AppDir + '\post-install.cmd "' + AppDir + '"',
-             mbError, MB_OK);
-    end;
+    { Phase 1 short-circuited into Phase 2 inline. All done. }
+    BuildSucceeded := True;
+  end
+  else if ExecResult and (ResultCode = 2) then
+  begin
+    { WSL was just installed and a reboot is required. RunOnce already
+      registered by post-install.ps1 to fire Phase 2 after reboot. }
+    NeedsReboot := True;
+    BuildSucceeded := True;
+  end
+  else if ExecResult and (ResultCode = 3) then
+  begin
+    { Hard prerequisite failure (no VT-x / unsupported Windows).
+      post-install.ps1 already showed a dialog. Mark as failed so the
+      Inno Setup wizard ends with an error page. }
+    BuildSucceeded := False;
   end
   else
   begin
-    Log('Exec() returned False - failed to start cmd.exe');
-    SaveStringToFile(LogFile, 'ERROR: Exec() returned False' + #13#10, True);
-    MsgBox('Failed to start the build process.' + #13#10 + #13#10 +
-           'cmd.exe: ' + CmdExe + #13#10 +
-           'params: ' + Params + #13#10 + #13#10 +
-           'You can retry manually by running:' + #13#10 +
-           AppDir + '\post-install.cmd "' + AppDir + '"',
+    MsgBox('WSL sandbox provisioning failed (exit code: ' + IntToStr(ResultCode) + ').' + #13#10 + #13#10 +
+           'Check the log file:' + #13#10 + LogFile + #13#10 + #13#10 +
+           'You can retry from PowerShell:' + #13#10 +
+           '  powershell -File "' + AppDir + '\post-install.ps1" -AppDir "' + AppDir + '" -Phase 1',
            mbError, MB_OK);
+    BuildSucceeded := False;
   end;
 end;
 
-{ --- Daemon install --- }
-
-procedure InstallDaemon;
-var
-  ResultCode: Integer;
-begin
-  if not BuildSucceeded then
-  begin
-    Log('Skipping daemon install because build failed');
-    Exit;
-  end;
-
-  if not WizardIsTaskSelected('installdaemon') then
-    Exit;
-
-  WizardForm.StatusLabel.Caption := 'Installing gateway daemon...';
-
-  if Exec(ExpandConstant('{app}\node.exe'),
-          ExpandConstant('"{app}\openclaw.mjs" gateway daemon install'),
-          ExpandConstant('{app}'),
-          SW_SHOW, ewWaitUntilTerminated, ResultCode) then
-  begin
-    if ResultCode <> 0 then
-      Log('Daemon install exited with code: ' + IntToStr(ResultCode));
-  end;
-end;
-
-{ --- Cloud provider config: read values from GUI, call node non-interactively --- }
-
-procedure ConfigureCloudProvider;
-var
-  ResultCode: Integer;
-  AppDir, NodeExe, ScriptPath, Params, LogFile: String;
-  Idx: Integer;
-  ApiKey, Model, ProviderId, ProviderBaseUrl, ProviderApi: String;
-begin
-  AppDir := ExpandConstant('{app}');
-  LogFile := AppDir + '\install.log';
-
-  SaveStringToFile(LogFile, '=== ConfigureCloudProvider ===' + #13#10, True);
-
-  ApiKey := Trim(ApiKeyEdit.Text);
-  if ApiKey = '' then
-  begin
-    SaveStringToFile(LogFile, 'SKIP: no API key entered' + #13#10, True);
-    Exit;
-  end;
-
-  if not BuildSucceeded then
-  begin
-    SaveStringToFile(LogFile, 'SKIP: BuildSucceeded=False' + #13#10, True);
-    Exit;
-  end;
-
-  NodeExe := AppDir + '\node.exe';
-  ScriptPath := AppDir + '\configure-cloud.cjs';
-
-  if not FileExists(ScriptPath) then
-  begin
-    SaveStringToFile(LogFile, 'SKIP: configure-cloud.cjs not found' + #13#10, True);
-    Exit;
-  end;
-
-  Idx := ProviderCombo.ItemIndex;
-  ProviderId := GetProviderId(Idx);
-  ProviderBaseUrl := GetProviderBaseUrl(Idx);
-  ProviderApi := GetProviderApi(Idx);
-  Model := Trim(ModelEdit.Text);
-  if Model = '' then
-    Model := GetProviderDefaultModel(Idx);
-
-  { Pass values as positional args for non-interactive mode }
-  Params := '"' + ScriptPath + '" "' + ProviderId + '" "' + ProviderBaseUrl + '" "' + ProviderApi + '" "' + ApiKey + '" "' + Model + '"';
-
-  SaveStringToFile(LogFile, 'cloud_provider: ' + ProviderId + #13#10, True);
-  SaveStringToFile(LogFile, 'cloud_model: ' + Model + #13#10, True);
-
-  WizardForm.StatusLabel.Caption := 'Applying cloud provider configuration...';
-  WizardForm.Refresh;
-
-  Exec(NodeExe, Params, AppDir, SW_HIDE, ewWaitUntilTerminated, ResultCode);
-
-  SaveStringToFile(LogFile, 'cloud_exit_code: ' + IntToStr(ResultCode) + #13#10, True);
-end;
-
-{ --- Wizard step events --- }
+{ --- Inno Setup callbacks --- }
 
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
@@ -429,8 +221,6 @@ begin
   begin
     WriteConfigFile;
     RunPostInstallBuild;
-    InstallDaemon;
-    ConfigureCloudProvider;
   end;
 end;
 
@@ -442,46 +232,86 @@ begin
     begin
       WizardForm.FinishedHeadingLabel.Caption := 'Installation Incomplete';
       WizardForm.FinishedLabel.Caption :=
-        'aiDAPTIVClaw files have been extracted, but the build process failed.' + #13#10 + #13#10 +
+        'aiDAPTIVClaw files have been extracted, but the WSL sandbox could not be provisioned.' + #13#10 + #13#10 +
         'Check the log file for details:' + #13#10 +
         ExpandConstant('{app}\install.log') + #13#10 + #13#10 +
-        'You can retry the build by running:' + #13#10 +
-        ExpandConstant('{app}\post-install.cmd "{app}"');
+        'You can retry from PowerShell:' + #13#10 +
+        ExpandConstant('powershell -File "{app}\post-install.ps1" -AppDir "{app}" -Phase 1');
+      WizardForm.RunList.Visible := False;
+    end
+    else if NeedsReboot then
+    begin
+      WizardForm.FinishedHeadingLabel.Caption := 'Reboot required';
+      WizardForm.FinishedLabel.Caption :=
+        'WSL2 has been installed. Windows must reboot to activate it.' + #13#10 + #13#10 +
+        'After reboot, aiDAPTIVClaw setup will resume automatically when ' +
+        'you log back in (Phase 2 of the installer is registered to run once via Windows RunOnce).';
       WizardForm.RunList.Visible := False;
     end;
   end;
 end;
 
+{ Tell Inno Setup whether to add a "reboot now / later" prompt at the end.
+  Hooked via the standard NeedRestart() callback. }
+function NeedRestart(): Boolean;
+begin
+  Result := NeedsReboot;
+end;
+
+{ Used as a [Run] Check: to suppress the post-install launcher when a
+  reboot is pending (RunOnce will open the browser after reboot instead). }
+function NotNeedsReboot(): Boolean;
+begin
+  Result := not NeedsReboot;
+end;
+
+{ --- Uninstall: tear down the WSL distro --- }
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
-  AppDir, ConfigDir: String;
+  AppDir, ConfigDir, DistroDir: String;
   ResultCode: Integer;
 begin
   if CurUninstallStep = usUninstall then
   begin
     AppDir := ExpandConstant('{app}');
 
-    { Remove pnpm global CLI link (best effort) }
+    { Unregister the WSL distro. This destroys the sandbox VM, including
+      everything under /home/openclaw — which is the user's workspace.
+      The uninstaller already prompts the user that this is irreversible. }
     Exec(ExpandConstant('{cmd}'),
-         '/C cd /d "' + AppDir + '" && pnpm unlink --global',
+         '/C wsl --unregister aidaptivclaw',
          AppDir, SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+    { Also remove the pending RunOnce entry if a half-finished install
+      left one behind. }
+    RegDeleteValue(HKEY_CURRENT_USER,
+                   'Software\Microsoft\Windows\CurrentVersion\RunOnce',
+                   'aiDAPTIVClawPostInstall');
   end;
 
   if CurUninstallStep = usPostUninstall then
   begin
     AppDir := ExpandConstant('{app}');
+    DistroDir := ExpandConstant('{commonappdata}') + '\aiDAPTIVClaw\wsl';
 
-    { Remove any remaining files in the app directory }
+    { Remove the imported distro directory left behind by wsl --unregister
+      (wsl --unregister normally cleans this up, but if the user manually
+      mucked with it we make sure it's gone). }
+    if DirExists(DistroDir) then
+      DelTree(DistroDir, True, True, True);
+
+    { Remove any remaining files in the app directory. }
     if DirExists(AppDir) then
       DelTree(AppDir, True, True, True);
 
-    { Ask about removing config files }
+    { Ask about removing the host-side config dir. }
     ConfigDir := ExpandConstant('{%USERPROFILE}') + '\.openclaw';
     if DirExists(ConfigDir) then
     begin
-      if MsgBox('Do you want to remove aiDAPTIVClaw configuration and data files?' + #13#10 +
+      if MsgBox('Do you want to remove aiDAPTIVClaw configuration files at:' + #13#10 +
                 ConfigDir + #13#10 + #13#10 +
-                'Click Yes to remove all settings, or No to keep them for future use.',
+                'Workspace data inside the WSL sandbox has already been removed.',
                 mbConfirmation, MB_YESNO) = IDYES then
       begin
         DelTree(ConfigDir, True, True, True);
