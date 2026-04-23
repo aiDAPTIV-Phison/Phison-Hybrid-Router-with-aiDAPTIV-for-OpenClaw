@@ -1,0 +1,88 @@
+# systemd unit for the OpenClaw gateway running inside the
+# `aidaptivclaw` WSL distro.
+#
+# Hardening directives implement the "workspace-writable, system read-only"
+# sandbox model described in
+# docs/plans/2026-04-23-wsl-sandbox-brainstorm-summary.md (Q5 = D).
+#
+# Reference: https://www.freedesktop.org/software/systemd/man/systemd.exec.html
+
+[Unit]
+Description=OpenClaw Gateway (sandboxed)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=openclaw
+Group=openclaw
+WorkingDirectory=/home/openclaw
+
+Environment=HOME=/home/openclaw
+Environment=NODE_ENV=production
+Environment=OPENCLAW_GATEWAY_BIND=127.0.0.1
+Environment=OPENCLAW_GATEWAY_PORT=18789
+
+ExecStart=/opt/node/bin/node /opt/openclaw/openclaw.mjs gateway run --bind 127.0.0.1 --port 18789 --force
+
+# --- Filesystem isolation ---
+# Most of the distro becomes read-only; only the explicitly listed
+# ReadWritePaths are writable. This is the core of the sandbox.
+ProtectSystem=strict
+ProtectHome=tmpfs
+ReadWritePaths=/home/openclaw/workspace /home/openclaw/.openclaw
+PrivateTmp=yes
+
+# --- Privileges ---
+# Drop all capabilities and prevent any privilege escalation.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+
+# --- Devices ---
+# Only minimal /dev nodes (null, zero, random, urandom, tty).
+PrivateDevices=yes
+
+# --- Kernel surface ---
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+
+# --- Namespaces ---
+RestrictNamespaces=yes
+LockPersonality=yes
+
+# --- System call filtering ---
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @debug @cpu-emulation @obsolete @raw-io @reboot @swap @module
+
+# --- Memory ---
+# MemoryDenyWriteExecute=yes intentionally NOT set: Node.js V8 needs
+# read-write-execute pages for JIT compilation and refuses to start
+# without them.
+RestrictRealtime=yes
+
+# --- Network ---
+# Network is intentionally fully open at MVP (Q4 = A in brainstorm).
+# Tighten with a follow-up: domain allowlist via iptables/nftables.
+# Do NOT add IPAddressDeny= until that work lands.
+
+# --- Restart policy ---
+Restart=on-failure
+RestartSec=5
+StartLimitInterval=60
+StartLimitBurst=3
+
+# --- Logging ---
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
