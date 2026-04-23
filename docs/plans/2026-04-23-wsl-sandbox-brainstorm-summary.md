@@ -5,7 +5,9 @@
 >
 > **目標讀者**：團隊成員、code reviewer、未來接手的工程師。
 > **撰寫日期**：2026-04-23
-> **狀態**：待 review，review 通過後進入設計階段
+> **狀態**：Implemented (2026-04-23) — 設計文件 [2026-04-23-wsl-sandbox-design.md](./2026-04-23-wsl-sandbox-design.md) 已完成；實作分散在 `installer/`、`scripts/build-rootfs.ps1`、`scripts/build-installer.ps1`、`src/commands/dashboard.ts` 與 `docs/install/windows.md`。
+>
+> **未驗證項目**：開發機未安裝 WSL，故 Task 0.1 / 1.4 / 4.1 / 4.2（端到端 build + 安裝煙霧測試）尚未執行；需在具備 WSL2 的環境（含 BIOS VT-x 啟用）由 QA 完成驗證後才算 production ready。
 
 ---
 
