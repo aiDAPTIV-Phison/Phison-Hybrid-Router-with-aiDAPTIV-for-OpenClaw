@@ -8,7 +8,9 @@
 
 **Architecture:** Installer ships a pre-built Ubuntu 24.04 rootfs (`aidaptivclaw.tar.gz`) containing a fully built OpenClaw under `/opt/openclaw`. On install, `wsl --import` registers the rootfs as a private distro `aidaptivclaw`. A systemd unit (`openclaw-gateway.service`) starts the gateway as the non-root `openclaw` user with hardening directives confining writes to `/home/openclaw/{workspace,.openclaw}` and `/tmp`. The Windows launcher only triggers `wsl.exe -d aidaptivclaw` and opens the browser at `http://localhost:18789` (reachable via WSL2 default localhost forwarding).
 
-**Tech Stack:** Inno Setup (installer), Bash + Docker (rootfs build in CI), WSL2, Ubuntu 24.04, systemd, Node.js 22+, pnpm.
+**Build pipeline:** Rootfs is built natively in WSL (no Docker). A throwaway WSL distro is created from Canonical's official Ubuntu 24.04 WSL base rootfs, a bash provisioning script installs Node + pnpm + builds OpenClaw, then `wsl --export` produces the shippable tarball. Source code is injected into the build distro via `git archive HEAD | wsl -e tar -xf -` (no `/mnt/c` mount needed, only git-tracked files included).
+
+**Tech Stack:** Inno Setup (installer), Bash (rootfs provision script), WSL2, Ubuntu 24.04 (Canonical WSL rootfs), systemd, Node.js 22+, pnpm.
 
 **Reference:** Decisions are summarized in `docs/plans/2026-04-23-wsl-sandbox-brainstorm-summary.md`. Read that first for context on every "why".
 
@@ -20,25 +22,19 @@
 
 **Files:** None (host check only).
 
-**Step 1: Verify Inno Setup 6 + Docker Desktop are installed on the build machine**
+**Step 1: Verify Inno Setup 6 is installed**
 
 Run (PowerShell):
 
 ```powershell
 & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /? | Select-Object -First 1
-docker --version
 ```
 
-Expected:
+Expected: `Inno Setup 6 Command-Line Compiler`. If missing, install from https://jrsoftware.org/isdl.php.
 
-```
-Inno Setup 6 Command-Line Compiler
-Docker version 24.x.x or later
-```
+**Step 2: Verify WSL2 is installed**
 
-If either is missing, install before proceeding. Docker is needed because rootfs build runs inside a Linux container (so the build is reproducible regardless of build host OS).
-
-**Step 2: Verify WSL2 is installed for local smoke tests**
+The same WSL is used for both building the rootfs and (in Task 4.x) testing the resulting installer. There is no Docker dependency.
 
 Run:
 
@@ -46,9 +42,29 @@ Run:
 wsl --status
 ```
 
-Expected: `Default Version: 2`. If `Default Version: 1` or WSL not installed, run `wsl --install --no-distribution` and reboot.
+Expected: contains `Default Version: 2`.
 
-**Step 3: No commit (environment-only check)**
+If `wsl.exe` returns "Linux 子系統未安裝" / "Linux is not installed", run:
+
+```powershell
+wsl --install --no-distribution
+```
+
+Then **reboot Windows** (required after WSL feature activation) and re-run Step 2.
+
+If `Default Version: 1`, run `wsl --set-default-version 2`.
+
+**Step 3: Verify CPU virtualization is enabled**
+
+Run:
+
+```powershell
+(Get-CimInstance Win32_Processor).VirtualizationFirmwareEnabled
+```
+
+Expected: `True`. If `False`, enable Intel VT-x / AMD-V in BIOS — WSL2 cannot run without it.
+
+**Step 4: No commit (environment-only check)**
 
 ---
 
@@ -56,98 +72,109 @@ Expected: `Default Version: 2`. If `Default Version: 1` or WSL not installed, ru
 
 > This phase produces `aidaptivclaw.tar.gz`, a pre-built Ubuntu 24.04 rootfs containing OpenClaw, ready to be embedded in the installer.
 
-### Task 1.1: Create rootfs build Dockerfile
+### Task 1.1: Create rootfs provisioning script
 
 **Files:**
-- Create: `installer/rootfs/Dockerfile`
+- Create: `installer/rootfs/provision.sh`
+- Create: `installer/rootfs/.gitignore` (ignore `.cache/`)
 
-**Step 1: Write the Dockerfile**
+**Background:** Instead of Docker, the rootfs is built inside a throwaway WSL distro that is bootstrapped from Canonical's official Ubuntu 24.04 WSL rootfs. `provision.sh` is the single bash script that runs **as root inside the build distro** and turns a vanilla Ubuntu into the shippable rootfs. The orchestration script (Task 1.3) runs entirely on the Windows host using `wsl.exe`.
 
-```dockerfile
-# Build aidaptivclaw rootfs: Ubuntu 24.04 + Node 22 + pnpm + OpenClaw built under /opt/openclaw.
-# The output of this image's filesystem is exported as aidaptivclaw.tar.gz and shipped in the installer.
-FROM ubuntu:24.04
-
-ENV DEBIAN_FRONTEND=noninteractive \
-    PNPM_HOME=/opt/pnpm \
-    PATH=/opt/pnpm:/opt/node/bin:$PATH
-
-# System packages: systemd is required because the WSL distro boots with [boot] systemd=true
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl gnupg git python3 build-essential \
-        dbus systemd systemd-sysv \
-        sudo locales tzdata \
-    && locale-gen en_US.UTF-8 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Node.js 22 LTS (matches the version embedded in the Windows installer)
-ARG NODE_VERSION=22.11.0
-RUN mkdir -p /opt/node && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
-    | tar -xJ --strip-components=1 -C /opt/node
-
-# pnpm via standalone install (deterministic, no global npm install)
-ARG PNPM_VERSION=9.12.0
-RUN curl -fsSL "https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linux-x64" -o /opt/pnpm/pnpm \
-    && chmod +x /opt/pnpm/pnpm
-
-# Create non-root openclaw user. uid 1000 is conventional for the first user.
-# No password, no shell login (nologin), not in sudo group.
-RUN useradd --create-home --uid 1000 --shell /usr/sbin/nologin openclaw
-
-# Stage source code (caller copies the repo into /tmp/openclaw-src before docker build)
-COPY --chown=openclaw:openclaw src/ /tmp/openclaw-src/
-
-# Build OpenClaw as the openclaw user, install to /opt/openclaw
-USER openclaw
-WORKDIR /tmp/openclaw-src
-RUN /opt/pnpm/pnpm install --ignore-scripts \
-    && /opt/pnpm/pnpm rebuild esbuild sharp koffi protobufjs \
-    && /opt/pnpm/pnpm build:docker \
-    && /opt/pnpm/pnpm ui:build
-
-USER root
-RUN mkdir -p /opt/openclaw \
-    && cp -r /tmp/openclaw-src/. /opt/openclaw/ \
-    && chown -R openclaw:openclaw /opt/openclaw \
-    && rm -rf /tmp/openclaw-src
-
-# WSL distro boot config (consumed when wsl --import registers the rootfs)
-COPY installer/rootfs/wsl.conf /etc/wsl.conf
-COPY installer/rootfs/openclaw-gateway.service /etc/systemd/system/openclaw-gateway.service
-
-# Enable the gateway service so systemd starts it on distro boot
-RUN systemctl enable openclaw-gateway.service
-
-# Workspace + config dirs (writable allowlist targets in the systemd unit)
-RUN mkdir -p /home/openclaw/workspace /home/openclaw/.openclaw /home/openclaw/readonly \
-    && chown -R openclaw:openclaw /home/openclaw
-
-# Strip apt caches and other noise to shrink the rootfs tarball
-RUN apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt /tmp/* /var/tmp/*
-
-CMD ["/sbin/init"]
-```
-
-**Step 2: Verify the Dockerfile builds (smoke test, do not export yet)**
-
-Run from repo root:
-
-```powershell
-# Dummy src so docker build won't fail; real src is staged in Task 1.3
-mkdir -Force installer\rootfs\.smoke-src
-echo '{"name":"smoke","version":"0.0.0"}' | Out-File -Encoding utf8 installer\rootfs\.smoke-src\package.json
-docker build -f installer/rootfs/Dockerfile --build-arg NODE_VERSION=22.11.0 -t aidaptivclaw-rootfs-smoke installer/rootfs/
-```
-
-Expected: build fails at the `pnpm install` step (no real `pnpm-lock.yaml`). This is FINE — we're only verifying the Dockerfile syntax + base image fetch. Real build runs in Task 1.3.
-
-If it fails BEFORE the `pnpm install` step (e.g. apt error, node download error, COPY error), fix the Dockerfile.
-
-**Step 3: Commit**
+**Step 1: Write `installer/rootfs/provision.sh`**
 
 ```bash
-git add installer/rootfs/Dockerfile
-git commit -m "installer: add rootfs Dockerfile for Ubuntu 24.04 sandbox base"
+#!/usr/bin/env bash
+# Provision a vanilla Ubuntu 24.04 WSL rootfs into the shippable aidaptivclaw rootfs.
+# Runs as root inside the throwaway build distro. Source code is expected at /tmp/openclaw-src,
+# pre-staged by the orchestrator (Task 1.3) via `git archive | wsl tar -xf -`.
+set -euo pipefail
+
+NODE_VERSION="${NODE_VERSION:-22.11.0}"
+PNPM_VERSION="${PNPM_VERSION:-9.12.0}"
+
+export DEBIAN_FRONTEND=noninteractive
+
+# 1. Base packages. systemd is mandatory because wsl.conf will enable [boot] systemd=true.
+apt-get update
+apt-get install -y --no-install-recommends \
+    ca-certificates curl gnupg git python3 build-essential \
+    dbus systemd systemd-sysv \
+    sudo locales tzdata
+locale-gen en_US.UTF-8
+rm -rf /var/lib/apt/lists/*
+
+# 2. Node.js 22 LTS — matches the version previously embedded in the Windows installer.
+mkdir -p /opt/node
+curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+    | tar -xJ --strip-components=1 -C /opt/node
+ln -sf /opt/node/bin/node /usr/local/bin/node
+
+# 3. pnpm via standalone binary (deterministic, no global npm install).
+mkdir -p /opt/pnpm
+curl -fsSL "https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-linux-x64" \
+    -o /opt/pnpm/pnpm
+chmod +x /opt/pnpm/pnpm
+ln -sf /opt/pnpm/pnpm /usr/local/bin/pnpm
+
+# 4. Non-root runtime user. uid 1000 = conventional first user.
+# nologin shell + no sudo group → cannot escalate even if process is compromised.
+useradd --create-home --uid 1000 --shell /usr/sbin/nologin openclaw
+
+# 5. Build OpenClaw as root for simplicity, chown to openclaw at the end.
+# Build artefacts land in /opt/openclaw owned by the openclaw user.
+test -d /tmp/openclaw-src || { echo "ERROR: /tmp/openclaw-src missing — orchestrator must stage source first" >&2; exit 1; }
+cd /tmp/openclaw-src
+pnpm install --ignore-scripts
+pnpm rebuild esbuild sharp koffi protobufjs
+pnpm build:docker
+pnpm ui:build
+
+mkdir -p /opt/openclaw
+cp -a /tmp/openclaw-src/. /opt/openclaw/
+chown -R openclaw:openclaw /opt/openclaw
+rm -rf /tmp/openclaw-src
+
+# 6. Install WSL boot config + systemd unit (created in Task 1.2, pre-staged at /tmp/rootfs-config/).
+install -m 0644 /tmp/rootfs-config/wsl.conf /etc/wsl.conf
+install -m 0644 /tmp/rootfs-config/openclaw-gateway.service /etc/systemd/system/openclaw-gateway.service
+systemctl enable openclaw-gateway.service
+
+# 7. Pre-create the writable allowlist directories referenced by the systemd unit's ReadWritePaths=.
+install -d -m 0755 -o openclaw -g openclaw \
+    /home/openclaw/workspace /home/openclaw/.openclaw /home/openclaw/readonly
+
+# 8. Shrink rootfs: drop apt caches, build artefacts, build-time tooling.
+apt-get purge -y build-essential || true
+apt-get autoremove -y
+apt-get clean
+rm -rf /var/lib/apt/lists/* /var/cache/apt /tmp/* /var/tmp/* /root/.cache /root/.npm
+
+echo "provision.sh: rootfs ready"
+```
+
+**Step 2: Create `installer/rootfs/.gitignore`**
+
+```gitignore
+# Cached Canonical base rootfs and build intermediates (see scripts/build-rootfs.ps1)
+.cache/
+*.tar
+*.tar.gz
+```
+
+**Step 3: Lint shellcheck (best effort)**
+
+```powershell
+# Optional — skip if shellcheck not installed locally; CI will catch issues.
+shellcheck installer/rootfs/provision.sh
+```
+
+Expected: no errors. SC2086 / SC2155 warnings are acceptable.
+
+**Step 4: Commit**
+
+```powershell
+git add installer/rootfs/provision.sh installer/rootfs/.gitignore
+git commit -m "installer: add rootfs provision.sh for WSL-native build"
 ```
 
 ---
@@ -294,12 +321,23 @@ git commit -m "installer: add WSL boot config + hardened systemd unit for gatewa
 
 ---
 
-### Task 1.3: Create rootfs build script
+### Task 1.3: Create rootfs build script (WSL-native)
 
 **Files:**
 - Create: `scripts/build-rootfs.ps1`
 
-**Step 1: Write the build script**
+**Pipeline overview (no Docker):**
+
+1. Download (and cache) Canonical's official Ubuntu 24.04 WSL base rootfs to `installer/rootfs/.cache/ubuntu-24.04-base.tar.gz`.
+2. `wsl --import aidaptivclaw-build` from the cached base into a throwaway distro location.
+3. Pre-stage `wsl.conf` + `openclaw-gateway.service` into `/tmp/rootfs-config/` inside the build distro.
+4. Stream source code into the build distro: `git archive HEAD | wsl -d aidaptivclaw-build -u root -- tar -xf - -C /tmp/openclaw-src`. Only git-tracked files are included; no `node_modules`, no `.git` history, no `/mnt/c` mount required.
+5. Run `provision.sh` inside the build distro as root.
+6. Shut the distro down so all writes are flushed.
+7. `wsl --export aidaptivclaw-build installer/rootfs/aidaptivclaw.tar.gz`.
+8. `wsl --unregister aidaptivclaw-build` to delete the build distro.
+
+**Step 1: Write `scripts/build-rootfs.ps1`**
 
 ```powershell
 <#
@@ -307,113 +345,159 @@ git commit -m "installer: add WSL boot config + hardened systemd unit for gatewa
     Build aidaptivclaw.tar.gz: a pre-built Ubuntu 24.04 WSL rootfs containing OpenClaw.
 
 .DESCRIPTION
-    Pipeline:
-    1. Stage repo source (excluding node_modules, .git, dist, tests) into installer/rootfs/.src/
-    2. docker build -f installer/rootfs/Dockerfile -> intermediate image
-    3. docker create + docker export -> aidaptivclaw.tar.gz
-    4. Output: installer/rootfs/aidaptivclaw.tar.gz (consumed by openclaw.iss in Task 2.1)
+    Pure WSL pipeline (no Docker):
+      1. Cache + load Canonical Ubuntu 24.04 WSL base rootfs.
+      2. Import as throwaway distro `aidaptivclaw-build`.
+      3. Stream tracked source via `git archive | wsl tar -xf -`.
+      4. Run installer/rootfs/provision.sh inside the distro as root.
+      5. Export the resulting filesystem to installer/rootfs/aidaptivclaw.tar.gz.
+      6. Unregister the build distro.
 
-    The built rootfs is consumed by Inno Setup at packaging time and shipped to end users.
-    Build time on a typical CI runner: ~10-20 min cold, ~3-5 min warm (Docker layer cache).
+    Build time on a typical workstation: ~15-25 min cold, ~5-10 min warm (base rootfs cached).
 
 .PARAMETER NodeVersion
-    Node.js version baked into the rootfs. Default 22.11.0 (matches Windows installer).
+    Node.js version baked into the rootfs. Default 22.11.0.
+.PARAMETER PnpmVersion
+    pnpm version baked into the rootfs. Default 9.12.0.
+.PARAMETER KeepBuildDistro
+    Skip `wsl --unregister` at the end (useful for debugging).
 #>
 param(
-    [string]$NodeVersion = "22.11.0"
+    [string]$NodeVersion = "22.11.0",
+    [string]$PnpmVersion = "9.12.0",
+    [switch]$KeepBuildDistro
 )
 
 $ErrorActionPreference = "Stop"
+
 $RepoRoot      = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $RootfsDir     = Join-Path $RepoRoot "installer\rootfs"
-$SrcStaging    = Join-Path $RootfsDir ".src"
+$CacheDir      = Join-Path $RootfsDir ".cache"
+$BaseTarball   = Join-Path $CacheDir "ubuntu-24.04-base.tar.gz"
 $OutputTarball = Join-Path $RootfsDir "aidaptivclaw.tar.gz"
-$ImageTag      = "aidaptivclaw-rootfs:build"
+$BuildDistro   = "aidaptivclaw-build"
+$BuildDistroDir = Join-Path $CacheDir "build-distro"
+
+# Canonical official Ubuntu 24.04 WSL rootfs — same image MS Store ships, but stable URL.
+$BaseUrl = "https://cloud-images.ubuntu.com/wsl/noble/current/ubuntu-noble-wsl-amd64-wsl.rootfs.tar.gz"
+
+function Step($n, $msg) {
+    Write-Host "[$n] $msg" -ForegroundColor Yellow
+}
+
+function Invoke-Wsl {
+    param([Parameter(Mandatory)][string[]]$Args)
+    & wsl.exe @Args
+    if ($LASTEXITCODE -ne 0) { throw "wsl $($Args -join ' ') failed (exit $LASTEXITCODE)" }
+}
 
 Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "  aidaptivclaw rootfs builder"             -ForegroundColor Cyan
+Write-Host "  aidaptivclaw rootfs builder (WSL native)" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 
-# --- Step 1: Stage source ---
-Write-Host "[1/4] Staging source..." -ForegroundColor Yellow
-if (Test-Path $SrcStaging) { Remove-Item -Recurse -Force $SrcStaging }
-New-Item -ItemType Directory -Path $SrcStaging | Out-Null
+# --- 0. Pre-flight ---
+& wsl.exe --status | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "WSL2 not installed. See scripts/install-wsl.md or run 'wsl --install --no-distribution'." }
+if (-not (Test-Path $CacheDir)) { New-Item -ItemType Directory -Path $CacheDir | Out-Null }
 
-# Use git ls-files to copy only tracked files (excludes node_modules/.git/dist by default)
+# Defensive: if a previous failed run left the build distro registered, drop it.
+$existing = (& wsl.exe --list --quiet) -split "`r?`n" | ForEach-Object { $_.Trim() }
+if ($existing -contains $BuildDistro) {
+    Step "0" "Removing leftover build distro..."
+    Invoke-Wsl @("--unregister", $BuildDistro)
+}
+
+# --- 1. Download Canonical base rootfs (cached) ---
+if (-not (Test-Path $BaseTarball)) {
+    Step "1/7" "Downloading Ubuntu 24.04 WSL base rootfs..."
+    Invoke-WebRequest -Uri $BaseUrl -OutFile $BaseTarball -UseBasicParsing
+} else {
+    Step "1/7" "Using cached base rootfs ($BaseTarball)"
+}
+
+# --- 2. Import throwaway build distro ---
+Step "2/7" "Importing build distro..."
+if (Test-Path $BuildDistroDir) { Remove-Item -Recurse -Force $BuildDistroDir }
+New-Item -ItemType Directory -Path $BuildDistroDir | Out-Null
+Invoke-Wsl @("--import", $BuildDistro, $BuildDistroDir, $BaseTarball, "--version", "2")
+
+# --- 3. Stage rootfs config files (consumed by provision.sh step 6) ---
+Step "3/7" "Staging rootfs config files..."
+Invoke-Wsl @("-d", $BuildDistro, "-u", "root", "--", "mkdir", "-p", "/tmp/rootfs-config", "/tmp/openclaw-src")
+# Use `wsl --cd` so relative paths resolve against the Windows host.
+$rootfsWin = ($RootfsDir -replace '\\','/') -replace '^([A-Za-z]):','/mnt/$($Matches[1].ToLower())'
+# Above hack avoids needing /mnt: prefer `wslpath -u` instead.
+$wslConfPath = (& wsl.exe -d $BuildDistro -u root -- wslpath -u "$RootfsDir\wsl.conf").Trim()
+$svcPath     = (& wsl.exe -d $BuildDistro -u root -- wslpath -u "$RootfsDir\openclaw-gateway.service").Trim()
+$provPath    = (& wsl.exe -d $BuildDistro -u root -- wslpath -u "$RootfsDir\provision.sh").Trim()
+Invoke-Wsl @("-d", $BuildDistro, "-u", "root", "--", "cp", $wslConfPath, "/tmp/rootfs-config/wsl.conf")
+Invoke-Wsl @("-d", $BuildDistro, "-u", "root", "--", "cp", $svcPath,     "/tmp/rootfs-config/openclaw-gateway.service")
+Invoke-Wsl @("-d", $BuildDistro, "-u", "root", "--", "cp", $provPath,    "/tmp/provision.sh")
+Invoke-Wsl @("-d", $BuildDistro, "-u", "root", "--", "chmod", "+x", "/tmp/provision.sh")
+
+# --- 4. Stream tracked source code into the distro ---
+# Why git archive: only commits tracked files, no node_modules, no junk, deterministic.
+# Why `cmd /c` wrapper: PowerShell's pipeline corrupts binary streams; cmd preserves bytes.
+Step "4/7" "Streaming source via git archive..."
 Push-Location $RepoRoot
 try {
-    $tracked = git ls-files
-    foreach ($f in $tracked) {
-        $dest = Join-Path $SrcStaging $f
-        $destDir = Split-Path $dest -Parent
-        if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
-        Copy-Item -LiteralPath (Join-Path $RepoRoot $f) -Destination $dest -Force
-    }
+    & cmd /c "git archive --format=tar HEAD | wsl.exe -d $BuildDistro -u root -- tar -xf - -C /tmp/openclaw-src"
+    if ($LASTEXITCODE -ne 0) { throw "git archive | tar pipe failed" }
 } finally {
     Pop-Location
 }
-Write-Host "  Source staged to $SrcStaging" -ForegroundColor Green
 
-# --- Step 2: docker build ---
-Write-Host "[2/4] Building Docker image (this is the long step)..." -ForegroundColor Yellow
-docker build `
-    -f (Join-Path $RootfsDir "Dockerfile") `
-    --build-arg NODE_VERSION=$NodeVersion `
-    -t $ImageTag `
-    --build-context src=$SrcStaging `
-    $RootfsDir
-if ($LASTEXITCODE -ne 0) {
-    throw "docker build failed (exit $LASTEXITCODE)"
-}
+# --- 5. Run provisioning script ---
+Step "5/7" "Running provision.sh inside build distro (long step)..."
+Invoke-Wsl @(
+    "-d", $BuildDistro, "-u", "root",
+    "--",
+    "env", "NODE_VERSION=$NodeVersion", "PNPM_VERSION=$PnpmVersion",
+    "/tmp/provision.sh"
+)
 
-# --- Step 3: docker export -> tar.gz ---
-Write-Host "[3/4] Exporting rootfs..." -ForegroundColor Yellow
-$ContainerId = (docker create $ImageTag).Trim()
-try {
-    docker export $ContainerId | & "$env:ProgramFiles\7-Zip\7z.exe" a -tgzip -si $OutputTarball
-    if ($LASTEXITCODE -ne 0) { throw "tar export / gzip failed" }
-} finally {
-    docker rm $ContainerId | Out-Null
+# --- 6. Shut down the distro to flush filesystem writes ---
+Step "6/7" "Shutting down build distro..."
+Invoke-Wsl @("--terminate", $BuildDistro)
+
+# --- 7. Export rootfs ---
+Step "7/7" "Exporting rootfs to $OutputTarball ..."
+if (Test-Path $OutputTarball) { Remove-Item -Force $OutputTarball }
+Invoke-Wsl @("--export", $BuildDistro, $OutputTarball, "--format", "tar.gz")
+
+if (-not $KeepBuildDistro) {
+    Invoke-Wsl @("--unregister", $BuildDistro)
+    Remove-Item -Recurse -Force $BuildDistroDir -ErrorAction SilentlyContinue
 }
 
 $SizeMb = [math]::Round((Get-Item $OutputTarball).Length / 1MB, 1)
-Write-Host "  Output: $OutputTarball ($SizeMb MB)" -ForegroundColor Green
-
-# --- Step 4: Cleanup ---
-Write-Host "[4/4] Cleanup..." -ForegroundColor Yellow
-Remove-Item -Recurse -Force $SrcStaging
-Write-Host "  Done." -ForegroundColor Green
+Write-Host ""
+Write-Host "Done. Output: $OutputTarball ($SizeMb MB)" -ForegroundColor Green
 ```
 
-> **Note on Dockerfile vs script `COPY`:** The Dockerfile uses `COPY src/ /tmp/openclaw-src/` which references a build context named `src` (line `--build-context src=$SrcStaging`). This requires Docker BuildKit (default in modern Docker Desktop). If the build host has BuildKit disabled, set `$env:DOCKER_BUILDKIT="1"` before running.
-
-**Step 2: Verify the script runs end-to-end**
-
-Run:
+**Step 2: Run end-to-end**
 
 ```powershell
-$env:DOCKER_BUILDKIT = "1"
 .\scripts\build-rootfs.ps1
 ```
 
 Expected:
-- Takes 10-20 min the first time (downloads ubuntu:24.04, node, pnpm; runs `pnpm install` + builds)
-- Produces `installer\rootfs\aidaptivclaw.tar.gz`, size approximately 600MB-1.2GB
+- Cold run: ~15-25 min (downloads Canonical base + Node + builds OpenClaw).
+- Warm run: ~5-10 min (base rootfs cached, only OpenClaw rebuild).
+- Output: `installer\rootfs\aidaptivclaw.tar.gz`, size approximately 500MB-1.2GB.
 
-If `pnpm install` or `build:docker` fails, the issue is in OpenClaw itself, not the rootfs pipeline. Investigate logs from `docker build`.
+If `pnpm install` or `build:docker` fails, the issue is in OpenClaw itself, not the pipeline. Inspect with `-KeepBuildDistro` then `wsl -d aidaptivclaw-build -u root` to drop into a shell.
 
-**Step 3: Verify the tarball can be imported into WSL**
-
-Run:
+**Step 3: Verify the tarball imports correctly**
 
 ```powershell
 $testDir = "$env:TEMP\aidaptivclaw-test"
-mkdir -Force $testDir
+New-Item -Force -ItemType Directory $testDir | Out-Null
 wsl --import aidaptivclaw-test $testDir installer\rootfs\aidaptivclaw.tar.gz
 wsl -d aidaptivclaw-test -u openclaw -e /opt/node/bin/node --version
 ```
 
-Expected: prints `v22.11.0` (the Node version baked in).
+Expected: prints `v22.11.0`.
 
 Cleanup:
 
@@ -424,9 +508,9 @@ Remove-Item -Recurse -Force $testDir
 
 **Step 4: Commit**
 
-```bash
+```powershell
 git add scripts/build-rootfs.ps1
-git commit -m "scripts: add rootfs build pipeline (docker -> wsl tarball)"
+git commit -m "scripts: add WSL-native rootfs build pipeline"
 ```
 
 ---
@@ -1085,7 +1169,7 @@ Run:
 ```
 
 Expected:
-- First run: invokes `build-rootfs.ps1` (10-20 min); then ISCC produces `installer\output\aidaptiv-claw-setup-2026.4.23.exe`
+- First run: invokes `build-rootfs.ps1` (15-25 min cold, 5-10 min warm); then ISCC produces `installer\output\aidaptiv-claw-setup-2026.4.23.exe`
 - Second run with no source changes: skips rootfs build, jumps straight to ISCC (~10s)
 
 The output `.exe` should be approximately 600MB-1.2GB (was ~50-100MB before).
@@ -1386,7 +1470,7 @@ These are intentionally NOT in the MVP. Track as follow-up issues.
 | 2 | **D-2 (per-folder read-only authorization) is not implemented.** Users have no UI to expose Windows folders read-only. | Manual workaround: user copies files into `\\wsl.localhost\...\workspace`. | File issue: WebUI button + WSL `mount --bind -o ro` orchestration. |
 | 3 | **Cold start latency 5-15s on first launcher click.** | Launcher prints status; future: splash screen / preload. | File issue: pre-warm WSL distro in `Run` registry on user login (opt-in). |
 | 4 | **Installer is ~1GB.** | Acceptable for MVP. | If size becomes a problem, switch to Q2=C (online build) but accept worse UX. |
-| 5 | **CI build adds 7-20 min/release.** | Use Docker layer cache and `git ls-files` change detection. | Optimize: split rootfs into two layers (system + OpenClaw) so OpenClaw-only changes skip the apt step. |
+| 5 | **CI build adds 15-25 min/release.** | Cache Canonical base rootfs in `installer/rootfs/.cache/`; CI restores cache between runs. | Optimize: snapshot a "system-only" intermediate rootfs (post-apt, pre-OpenClaw) so day-to-day OpenClaw changes skip the apt step. |
 | 6 | **WSL2 not available on Win10 1909 / Server 2019 / older.** | Documented prerequisite. | Out of scope; users on those versions cannot use this product. |
 | 7 | **Sandbox-aware Cursor IDE / VS Code integration not done.** | Users still edit files via UNC path; Cursor's MCP can still talk to `localhost:18789`. | File issue: investigate if Cursor needs a sandbox-aware connector. |
 | 8 | **No telemetry on sandbox effectiveness.** | None. | File issue: ship optional opt-in audit log of denied syscalls / mounts. |
