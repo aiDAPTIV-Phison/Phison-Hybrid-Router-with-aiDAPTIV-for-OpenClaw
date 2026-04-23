@@ -14,6 +14,10 @@ import {
 
 type DashboardOptions = {
   noOpen?: boolean;
+  // Print only the dashboard URL (with token if available) on a single
+  // line and skip clipboard / browser / hint output. Used by the WSL2
+  // launcher to grab the URL programmatically. Implies noOpen.
+  printUrl?: boolean;
 };
 
 async function resolveDashboardToken(
@@ -74,6 +78,14 @@ export async function dashboardCommand(
   const dashboardUrl = includeTokenInUrl
     ? `${links.httpUrl}#token=${encodeURIComponent(token)}`
     : links.httpUrl;
+
+  // Machine-readable mode: emit just the URL on a single line so callers
+  // (e.g. the WSL2 launcher batch script) can capture it via stdout.
+  // Skip every other side-effect to keep the output one line clean.
+  if (options.printUrl) {
+    runtime.log(dashboardUrl);
+    return;
+  }
 
   runtime.log(`Dashboard URL: ${dashboardUrl}`);
   if (resolvedToken.tokenSecretRefConfigured && token) {

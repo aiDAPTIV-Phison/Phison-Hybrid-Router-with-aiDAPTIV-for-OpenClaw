@@ -173,6 +173,60 @@ describe("dashboardCommand", () => {
     );
   });
 
+  describe("--print-url", () => {
+    it("prints only the URL (with token) and skips browser/clipboard/hints", async () => {
+      mockSnapshot("abc123");
+      copyToClipboardMock.mockResolvedValue(true);
+
+      await dashboardCommand(runtime, { printUrl: true });
+
+      // The URL is the only thing logged.
+      expect(runtime.log).toHaveBeenCalledTimes(1);
+      expect(runtime.log).toHaveBeenCalledWith("http://127.0.0.1:18789/#token=abc123");
+
+      // No clipboard, no browser, no helper messages.
+      expect(copyToClipboardMock).not.toHaveBeenCalled();
+      expect(detectBrowserOpenSupportMock).not.toHaveBeenCalled();
+      expect(openUrlMock).not.toHaveBeenCalled();
+      expect(formatControlUiSshHintMock).not.toHaveBeenCalled();
+    });
+
+    it("prints bare URL when no token is configured", async () => {
+      mockSnapshot(undefined);
+
+      await dashboardCommand(runtime, { printUrl: true });
+
+      expect(runtime.log).toHaveBeenCalledTimes(1);
+      expect(runtime.log).toHaveBeenCalledWith("http://127.0.0.1:18789/");
+    });
+
+    it("prints URL without token when SecretRef is configured", async () => {
+      mockSnapshot({
+        source: "env",
+        provider: "default",
+        id: "GATEWAY_TOKEN",
+      });
+      resolveSecretRefValuesMock.mockResolvedValue(
+        new Map([["env:default:GATEWAY_TOKEN", "resolved-token"]]),
+      );
+
+      await dashboardCommand(runtime, { printUrl: true });
+
+      // SecretRef-managed tokens are not embedded in URLs.
+      expect(runtime.log).toHaveBeenCalledTimes(1);
+      expect(runtime.log).toHaveBeenCalledWith("http://127.0.0.1:18789/");
+    });
+
+    it("printUrl wins when both --print-url and --no-open are set", async () => {
+      mockSnapshot("xyz");
+
+      await dashboardCommand(runtime, { printUrl: true, noOpen: true });
+
+      expect(runtime.log).toHaveBeenCalledTimes(1);
+      expect(runtime.log).toHaveBeenCalledWith("http://127.0.0.1:18789/#token=xyz");
+    });
+  });
+
   it("resolves env-template gateway.auth.token before building dashboard URL", async () => {
     mockSnapshot("${CUSTOM_GATEWAY_TOKEN}");
     copyToClipboardMock.mockResolvedValue(true);
