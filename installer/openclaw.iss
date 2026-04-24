@@ -1,9 +1,16 @@
-; aiDAPTIVClaw Windows Installer - Inno Setup Script (WSL2 sandbox)
+; aiDAPTIVClaw Windows Installer - Inno Setup Script (WSL2 sandbox, Q2=C online build)
 ;
-; Ships a pre-built Ubuntu 24.04 WSL rootfs containing OpenClaw under
-; /opt/openclaw, plus a PowerShell post-install script that imports the
-; rootfs as a private WSL distro `aidaptivclaw` running as a non-root user
-; with systemd hardening.
+; Ships:
+;   - Canonical's vanilla Ubuntu 24.04 WSL base rootfs (ubuntu-base.tar.gz, ~50 MB)
+;   - OpenClaw source tarball (openclaw-source.tar.gz, ~10-30 MB, from `git archive HEAD`)
+;   - rootfs config files (wsl.conf, openclaw-gateway.service, provision.sh)
+;   - Windows-side launcher + dual-phase post-install.ps1
+;
+; On install, post-install.ps1 (Phase 2) imports the base rootfs as the
+; private WSL distro `aidaptivclaw`, stages the source + configs into
+; /tmp inside the distro, and runs provision.sh as root to apt-install
+; packages, install Node.js, build OpenClaw, and enable the systemd unit.
+; Provision time on the customer machine: ~15-30 min, requires internet.
 ;
 ; Build with: iscc.exe /DAppVersion=x.x.x openclaw.iss
 ;
@@ -47,11 +54,21 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 Name: "startmenuicon"; Description: "Create a Start Menu shortcut"; GroupDescription: "Additional options:"; Flags: checkedonce
 
 [Files]
-; Pre-built WSL rootfs (produced by scripts/build-rootfs.ps1).
-; Imported by post-install.ps1 as the `aidaptivclaw` distro.
-Source: "rootfs\aidaptivclaw.tar.gz"; DestDir: "{app}\rootfs"; Flags: ignoreversion
+; Canonical Ubuntu 24.04 WSL base rootfs (cached/downloaded by scripts/build-installer.ps1).
+; Imported by post-install.ps1 Phase 2 as the `aidaptivclaw` distro.
+Source: "rootfs\ubuntu-base.tar.gz"; DestDir: "{app}\rootfs"; Flags: ignoreversion
 
-; PowerShell provisioning script (runs in two phases — see post-install.ps1 header).
+; OpenClaw source code packed via `git archive HEAD` at build time.
+; provision.sh extracts this inside the customer's distro and builds OpenClaw.
+Source: "rootfs\openclaw-source.tar.gz"; DestDir: "{app}\rootfs"; Flags: ignoreversion
+
+; Distro config + provisioning script (staged into /tmp/ inside the distro
+; by post-install.ps1, then consumed by provision.sh).
+Source: "rootfs\wsl.conf"; DestDir: "{app}\rootfs"; Flags: ignoreversion
+Source: "rootfs\openclaw-gateway.service"; DestDir: "{app}\rootfs"; Flags: ignoreversion
+Source: "rootfs\provision.sh"; DestDir: "{app}\rootfs"; Flags: ignoreversion
+
+; PowerShell provisioning orchestrator (runs in two phases — see header).
 Source: "post-install.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Launcher and helpers
@@ -173,7 +190,7 @@ begin
   SaveStringToFile(LogFile, 'invocation: powershell.exe ' + Params + #13#10, True);
   SaveStringToFile(LogFile, 'workdir: ' + AppDir + #13#10, True);
 
-  WizardForm.StatusLabel.Caption := 'Provisioning WSL sandbox (this may take a few minutes)...';
+  WizardForm.StatusLabel.Caption := 'Provisioning WSL sandbox (downloads packages + builds OpenClaw, ~15-30 min)...';
   WizardForm.Refresh;
 
   ExecResult := Exec('powershell.exe', Params, AppDir,
