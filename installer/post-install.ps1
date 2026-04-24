@@ -3,17 +3,18 @@
     aiDAPTIVClaw target-machine post-install / WSL provisioning.
 
 .DESCRIPTION
-    Dual-phase script invoked by Inno Setup [Code] (Phase 1) and by
-    Windows RunOnce on the next user login (Phase 2).
+    Dual-phase script invoked by Inno Setup [Code] (Phase 1) and by a
+    Scheduled Task at the next user logon (Phase 2).
 
       Phase 1 (called from Inno Setup):
         * Verify Windows version, virtualization, WSL.
-        * If WSL missing: install it, register HKCU RunOnce for Phase 2,
-          ask user to reboot. Exits with code 2.
-        * If WSL OK: short-circuit straight into Phase 2 in the same
-          process (no reboot needed).
+        * If WSL missing OR vmcompute pending reboot: install/skip,
+          register a Scheduled Task to resume Phase 2 with elevated
+          privileges at next logon, ask user to reboot. Exits with code 2.
+        * If WSL fully ready: short-circuit straight into Phase 2 in the
+          same (already-elevated) process (no reboot needed).
 
-      Phase 2 (called after reboot via RunOnce, OR rerun by the user):
+      Phase 2 (called after reboot via Scheduled Task, OR rerun by the user):
         * Update %USERPROFILE%\.wslconfig (vmIdleTimeout=-1) — applied
           BEFORE provisioning so the build is not killed by idle timeout.
         * wsl --import the bundled Ubuntu 24.04 base rootfs as `aidaptivclaw`.
@@ -25,18 +26,18 @@
         * wsl --terminate so the next boot picks up the new wsl.conf and
           starts systemd + the gateway.
         * Wait for the gateway HTTP endpoint, open the browser.
-        * Cleanup the RunOnce entry.
+        * Cleanup the Scheduled Task.
 
     Exit codes (consumed by openclaw.iss [Code]):
         0  success — Phase 1 went through to Phase 2 inline, all good
-        2  reboot required — Phase 1 installed WSL, RunOnce registered
+        2  reboot required — Phase 1 installed WSL, resume task registered
         3  prerequisites unmet — VT-x off, unsupported Windows, etc.
         1  any other failure — see install.log
 
 .PARAMETER AppDir
     Directory where the installer placed files (Inno Setup {app}).
 .PARAMETER Phase
-    1 (default, called from installer) or 2 (called via RunOnce).
+    1 (default, called from installer) or 2 (called via the resume task).
 .PARAMETER FromInstaller
     Set when invoked from Inno Setup [Code]; suppresses interactive
     "press Enter to exit" prompts.
@@ -60,6 +61,7 @@ $DistroName   = "aidaptivclaw"
 $DistroDir    = Join-Path $env:ProgramData "aiDAPTIVClaw\wsl"
 $RunOnceKey  = "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce"
 $RunOnceName = "aiDAPTIVClawPostInstall"
+$ResumeTaskName = "aiDAPTIVClawPhase2Resume"
 # Update this URL when the docs are published. Phase 1/2 dialogs link here
 # for self-service troubleshooting.
 $DocsUrl     = "https://github.com/openclaw/openclaw/blob/main/docs/install/windows.md"
@@ -195,19 +197,53 @@ function Test-Wsl2Ready {
     return $true
 }
 
+function Test-IsAdmin {
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $p  = New-Object Security.Principal.WindowsPrincipal($id)
+    return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
 function Register-Phase2RunOnce {
-    # HKCU RunOnce: fires once on the next interactive logon for THIS
-    # user, then auto-deletes. Same mechanism Visual Studio Installer,
-    # Office, and Docker Desktop use.
-    $cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$AppDir\post-install.ps1`" -AppDir `"$AppDir`" -Phase 2"
-    if (-not (Test-Path $RunOnceKey)) {
-        New-Item -Path $RunOnceKey -Force | Out-Null
-    }
-    Set-ItemProperty -Path $RunOnceKey -Name $RunOnceName -Value $cmd
-    Write-Log "Registered HKCU RunOnce: $RunOnceName"
+    # Schedule Phase 2 to auto-resume after the next interactive logon.
+    #
+    # We DELIBERATELY do NOT use HKCU\RunOnce here. RunOnce-launched
+    # processes inherit the user's standard token even when the user is
+    # in the Administrators group — there is no UAC consent prompt and
+    # no automatic elevation. Phase 2 needs admin (Start-Service vmcompute,
+    # wsl --import to ProgramData, etc.) so a RunOnce-launched Phase 2
+    # immediately fails Test-VmComputeReady with ACCESS_DENIED on
+    # OpenService and dead-ends with "WSL not ready".
+    #
+    # Scheduled Task with -RunLevel Highest, in contrast, gives admin
+    # users the elevated token at logon WITHOUT a UAC prompt. This is
+    # the documented mechanism for "silent" elevated auto-resume after
+    # reboot (used by Windows Update, Visual Studio Installer, etc.).
+    $action  = New-ScheduledTaskAction -Execute "powershell.exe" `
+        -Argument ("-NoProfile -ExecutionPolicy Bypass -File `"$AppDir\post-install.ps1`" -AppDir `"$AppDir`" -Phase 2")
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME `
+        -LogonType Interactive -RunLevel Highest
+    # StartWhenAvailable: if the trigger fires while Task Scheduler is
+    # busy (or the user logs on before TS is ready), run as soon as
+    # possible afterwards. Battery flags: don't refuse to run on laptops.
+    $settings = New-ScheduledTaskSettingsSet `
+        -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+    Register-ScheduledTask -TaskName $ResumeTaskName `
+        -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+    Write-Log "Registered scheduled task: $ResumeTaskName (RunLevel=Highest, AtLogOn user=$env:USERNAME)"
 }
 
 function Unregister-Phase2RunOnce {
+    # Remove the scheduled task. Also clean up any HKCU RunOnce entry
+    # left behind by older installer versions for forward compatibility.
+    if (Get-ScheduledTask -TaskName $ResumeTaskName -ErrorAction SilentlyContinue) {
+        try {
+            Unregister-ScheduledTask -TaskName $ResumeTaskName -Confirm:$false -ErrorAction Stop
+            Write-Log "Unregistered scheduled task: $ResumeTaskName"
+        } catch {
+            Write-Log "Failed to unregister scheduled task: $($_.Exception.Message)"
+        }
+    }
     if (Test-Path $RunOnceKey) {
         Remove-ItemProperty -Path $RunOnceKey -Name $RunOnceName -ErrorAction SilentlyContinue
     }
@@ -554,6 +590,27 @@ try {
     # Ensure log file exists; appended to throughout the run.
     if (-not (Test-Path $LogFile)) {
         New-Item -ItemType File -Path $LogFile -Force | Out-Null
+    }
+
+    # Both phases need admin: Phase 1 calls wsl --install (DISM-level
+    # operation) and Phase 2 calls Start-Service vmcompute / wsl --import
+    # (writes to ProgramData). The Inno Setup installer launches Phase 1
+    # already-elevated. Phase 2's scheduled task is registered with
+    # RunLevel=Highest so it inherits an elevated token at logon. But if
+    # the user runs the script by hand from a standard shell — or some
+    # corporate policy stripped the task's privilege — we self-elevate
+    # rather than fail with a confusing ACCESS_DENIED later.
+    if (-not (Test-IsAdmin)) {
+        Write-Log "Not running elevated; relaunching self via UAC (Phase=$Phase)"
+        $argList = @(
+            "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", "`"$PSCommandPath`"",
+            "-AppDir", "`"$AppDir`"",
+            "-Phase", $Phase
+        )
+        if ($FromInstaller) { $argList += "-FromInstaller" }
+        Start-Process powershell.exe -Verb RunAs -ArgumentList $argList -Wait
+        exit 0
     }
 
     if ($Phase -eq '1') {
