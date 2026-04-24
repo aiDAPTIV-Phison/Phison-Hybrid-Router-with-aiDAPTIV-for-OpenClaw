@@ -324,8 +324,11 @@ function Invoke-Phase1 {
              "Hyper-V Host Compute Service (vmcompute) can start.`n`n" +
              "Until that happens, the sandbox VM cannot be created.`n`n" +
              "Click OK, then save your work and reboot. Setup will " +
-             "resume automatically after you log back in.")
-        Write-Log "RunOnce registered; awaiting reboot."
+             "resume automatically after you log back in (Phase 2: " +
+             "downloads packages + builds OpenClaw, ~15-30 min).`n`n" +
+             "To monitor live progress after reboot, open PowerShell:`n" +
+             "  Get-Content `"$LogFile`" -Wait -Tail 50")
+        Write-Log "Resume task registered; awaiting reboot."
         exit 2
     }
 
@@ -352,9 +355,12 @@ function Invoke-Phase1 {
     Show-InfoDialog "Reboot required" `
         ("WSL2 has been installed.`n`n" +
          "Windows must reboot to activate it. Setup will resume " +
-         "automatically after you log back in.`n`n" +
-         "Click OK, then save your work and reboot.")
-    Write-Log "WSL installed; reboot required. RunOnce registered."
+         "automatically after you log back in (Phase 2: downloads " +
+         "packages + builds OpenClaw, ~15-30 min).`n`n" +
+         "Click OK, then save your work and reboot.`n`n" +
+         "To monitor live progress after reboot, open PowerShell:`n" +
+         "  Get-Content `"$LogFile`" -Wait -Tail 50")
+    Write-Log "WSL installed; reboot required. Resume task registered."
     exit 2
 }
 
@@ -387,6 +393,33 @@ function Update-WslConfig {
 
 function Invoke-Phase2 {
     Write-Log "Starting Phase 2 (online provision + first boot)"
+
+    # User-visible banner. When Phase 2 is launched by the resume task
+    # after a reboot, the user sees a PowerShell window pop up out of
+    # nowhere — make sure they immediately understand WHAT it is, HOW
+    # LONG it takes, and HOW TO MONITOR it without staring at a blank
+    # screen for 25 minutes.
+    Write-Host ""
+    Write-Host "============================================================" -ForegroundColor Cyan
+    Write-Host "  aiDAPTIVClaw Phase 2: WSL Sandbox Provisioning" -ForegroundColor Cyan
+    Write-Host "============================================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  This window will:" -ForegroundColor Yellow
+    Write-Host "    1. Import a vanilla Ubuntu 24.04 base into WSL"
+    Write-Host "    2. apt-install build dependencies"
+    Write-Host "    3. Download Node.js + pnpm"
+    Write-Host "    4. Build OpenClaw (~15-30 minutes total)"
+    Write-Host "    5. Open your browser to the dashboard when done"
+    Write-Host ""
+    Write-Host "  Do not close this window until you see your browser open." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  Live progress is also written to:" -ForegroundColor Gray
+    Write-Host "    $LogFile" -ForegroundColor Gray
+    Write-Host "  To tail it from another shell:" -ForegroundColor Gray
+    Write-Host "    Get-Content `"$LogFile`" -Wait -Tail 50" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "============================================================" -ForegroundColor Cyan
+    Write-Host ""
 
     # Defensive re-check: handles user disabling VT-x between phases.
     if (-not (Test-VirtualizationEnabled)) {
@@ -464,7 +497,9 @@ function Invoke-Phase2 {
                  "This usually means Windows installed WSL but has not " +
                  "rebooted yet to activate the hypervisor.`n`n" +
                  "Click OK, then save your work and reboot. Setup will " +
-                 "resume automatically after you log back in.")
+                 "resume automatically after you log back in.`n`n" +
+                 "To monitor live progress after reboot, open PowerShell:`n" +
+                 "  Get-Content `"$LogFile`" -Wait -Tail 50")
             exit 2
         }
         Show-FatalDialog "WSL import failed" "wsl --import failed (exit $importExit). See $LogFile for details."

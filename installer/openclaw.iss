@@ -84,8 +84,8 @@ Name: "{group}\Uninstall aiDAPTIVClaw"; Filename: "{uninstallexe}"; Tasks: start
 
 [Run]
 ; Optional post-install launch; only runs if WSL setup completed without
-; needing a reboot (NeedsReboot=False). Otherwise the user reboots and
-; HKCU RunOnce fires Phase 2 + opens the browser automatically.
+; needing a reboot (NeedsReboot=False). Otherwise the user reboots and a
+; scheduled task fires Phase 2 + opens the browser automatically.
 Filename: "{app}\openclaw-launcher.vbs"; Description: "Launch aiDAPTIVClaw"; Flags: nowait postinstall skipifsilent shellexec; Check: NotNeedsReboot
 
 [UninstallDelete]
@@ -207,8 +207,9 @@ begin
   end
   else if ExecResult and (ResultCode = 2) then
   begin
-    { WSL was just installed and a reboot is required. RunOnce already
-      registered by post-install.ps1 to fire Phase 2 after reboot. }
+    { WSL was just installed (or vmcompute pending reboot) -- reboot is
+      required. Scheduled task already registered by post-install.ps1 to
+      fire Phase 2 with elevated privileges at the next user logon. }
     NeedsReboot := True;
     BuildSucceeded := True;
   end
@@ -252,17 +253,24 @@ begin
         'aiDAPTIVClaw files have been extracted, but the WSL sandbox could not be provisioned.' + #13#10 + #13#10 +
         'Check the log file for details:' + #13#10 +
         ExpandConstant('{app}\install.log') + #13#10 + #13#10 +
-        'You can retry from PowerShell:' + #13#10 +
-        ExpandConstant('powershell -File "{app}\post-install.ps1" -AppDir "{app}" -Phase 1');
+        'You can monitor or tail it live with:' + #13#10 +
+        ExpandConstant('  Get-Content "{app}\install.log" -Wait -Tail 50') + #13#10 + #13#10 +
+        'You can retry the install from PowerShell:' + #13#10 +
+        ExpandConstant('  powershell -File "{app}\post-install.ps1" -AppDir "{app}" -Phase 1');
       WizardForm.RunList.Visible := False;
     end
     else if NeedsReboot then
     begin
-      WizardForm.FinishedHeadingLabel.Caption := 'Reboot required';
+      WizardForm.FinishedHeadingLabel.Caption := 'Phase 1 of 2 complete -- reboot required';
       WizardForm.FinishedLabel.Caption :=
-        'WSL2 has been installed. Windows must reboot to activate it.' + #13#10 + #13#10 +
-        'After reboot, aiDAPTIVClaw setup will resume automatically when ' +
-        'you log back in (Phase 2 of the installer is registered to run once via Windows RunOnce).';
+        'aiDAPTIVClaw has finished extracting files and configuring WSL.' + #13#10 + #13#10 +
+        'IMPORTANT: This is only Phase 1. Phase 2 (download Ubuntu base, ' +
+        'install Node.js, build OpenClaw -- approximately 15 to 30 minutes) ' +
+        'will start AUTOMATICALLY after you reboot Windows and log back in.' + #13#10 + #13#10 +
+        'A PowerShell window will pop up running the build. Do not close it.' + #13#10 + #13#10 +
+        'To monitor live progress, open a separate PowerShell and run:' + #13#10 +
+        ExpandConstant('  Get-Content "{app}\install.log" -Wait -Tail 50') + #13#10 + #13#10 +
+        'When build completes, your browser will open to the OpenClaw dashboard.';
       WizardForm.RunList.Visible := False;
     end;
   end;
@@ -300,8 +308,15 @@ begin
          '/C wsl --unregister aidaptivclaw',
          AppDir, SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
-    { Also remove the pending RunOnce entry if a half-finished install
-      left one behind. }
+    { Tear down a pending Phase 2 resume task if a half-finished install
+      left one behind — otherwise the task would fire after uninstall and
+      try to invoke a now-deleted post-install.ps1. }
+    Exec(ExpandConstant('{cmd}'),
+         '/C schtasks /Delete /TN aiDAPTIVClawPhase2Resume /F',
+         AppDir, SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+    { Backwards-compat: also wipe any HKCU RunOnce entry from older
+      installer versions that used RunOnce instead of a scheduled task. }
     RegDeleteValue(HKEY_CURRENT_USER,
                    'Software\Microsoft\Windows\CurrentVersion\RunOnce',
                    'aiDAPTIVClawPostInstall');
