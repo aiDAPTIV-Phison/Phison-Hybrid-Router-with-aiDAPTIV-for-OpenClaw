@@ -1,11 +1,18 @@
 # Install aiDAPTIVClaw on Windows (WSL2 sandbox)
 
 aiDAPTIVClaw on Windows runs entirely inside a private WSL2 distro called
-`aidaptivclaw`. The installer ships a pre-built Ubuntu 24.04 root
-filesystem containing OpenClaw, Node.js, pnpm, and a hardened systemd
-unit. Your Windows machine never installs Node.js, never builds source,
-and never grants the agent direct read/write access to your Windows file
-system outside the sandbox.
+`aidaptivclaw`. The installer ships a vanilla Ubuntu 24.04 base rootfs
+plus the OpenClaw source code; on first install, the installer imports
+the base into a private distro and then provisions it online — `apt`
+installs base packages, downloads Node.js + pnpm, and builds OpenClaw
+inside the sandbox. Your Windows machine never installs Node.js, never
+runs the OpenClaw build outside WSL, and never grants the agent direct
+read/write access to your Windows file system outside the sandbox.
+
+> **Why online build?** Smaller installer (~150 MB instead of ~1 GB),
+> and the build machine doesn't need WSL2/VT-x to produce the .exe.
+> Trade-off: first install on the customer machine takes ~15-30 min and
+> requires internet access during that window.
 
 > Design rationale: see [docs/plans/2026-04-23-wsl-sandbox-design.md](../plans/2026-04-23-wsl-sandbox-design.md)
 > and [docs/plans/2026-04-23-wsl-sandbox-brainstorm-summary.md](../plans/2026-04-23-wsl-sandbox-brainstorm-summary.md).
@@ -19,7 +26,9 @@ system outside the sandbox.
 | RAM | 8 GB (16 GB recommended) |
 | Disk | 6 GB free for installer + WSL distro |
 | Privileges | Local administrator account |
-| Network | Outbound HTTPS to `nodejs.org`, `github.com`, model providers |
+| Network at install time | **Required.** Outbound HTTPS to `archive.ubuntu.com` (apt), `nodejs.org` (Node.js), `github.com` (pnpm), and the npm registry. The first install downloads ~600 MB of packages. |
+| Network at runtime | Outbound HTTPS to model providers you configure. |
+| First install time | ~15-30 minutes (apt + npm install + OpenClaw build inside WSL). Subsequent launches start in seconds. |
 
 ## Quick install
 
@@ -30,12 +39,24 @@ system outside the sandbox.
 4. The installer:
    - Verifies your Windows version and CPU virtualization.
    - Installs WSL2 if missing (one-time; **requires reboot**).
-   - Imports the bundled `aidaptivclaw` distro.
+   - Imports the bundled Ubuntu 24.04 base as the `aidaptivclaw` distro.
+   - **Provisions OpenClaw online** (15-25 min): apt installs base
+     packages, downloads Node.js + pnpm, builds OpenClaw inside WSL,
+     and enables the systemd gateway unit. Progress is teed to
+     `%LOCALAPPDATA%\Programs\aiDAPTIVClaw\install.log`.
    - Boots the sandbox; systemd starts the gateway automatically.
    - Opens the Control UI in your default browser.
 5. If a reboot is required, log back in afterwards and aiDAPTIVClaw setup
-   resumes automatically (Windows RunOnce). The Control UI opens once
-   ready.
+   resumes automatically (Windows RunOnce). Provisioning then runs as
+   above and the Control UI opens once ready.
+
+> **Plan ~30 minutes for the first install.** The wizard's status line
+> reads "Provisioning WSL sandbox (downloads packages + builds OpenClaw,
+> ~15-30 min)..." — that's normal, not a hang. Tail the install log to
+> watch progress:
+> ```powershell
+> Get-Content "$env:LOCALAPPDATA\Programs\aiDAPTIVClaw\install.log" -Wait -Tail 50
+> ```
 
 That's it.
 
@@ -106,6 +127,43 @@ Common causes and fixes:
 
 After fixing the underlying issue, re-run `wsl --install --no-distribution`
 in Administrator PowerShell, reboot, and re-run aiDAPTIVClaw setup.
+
+<a id="provisioning-failed"></a>
+
+### "Provisioning failed" dialog during install
+
+The installer imported the base Ubuntu rootfs but `provision.sh` failed
+inside the distro. The most common causes:
+
+- **Network**: `apt update`, `nodejs.org`, or `github.com` was
+  unreachable. Common when on a corporate proxy that needs `http_proxy`
+  / `https_proxy` env vars. Set them in WSL before retrying:
+
+  ```powershell
+  wsl -d aidaptivclaw -u root -e bash -c "echo 'export http_proxy=http://proxy:port' >> /etc/environment; echo 'export https_proxy=http://proxy:port' >> /etc/environment"
+  ```
+
+- **Out of disk space**: provisioning needs ~3 GB headroom on the system
+  drive (downloaded packages + build artifacts before cleanup). Check:
+
+  ```powershell
+  Get-PSDrive C
+  ```
+
+- **DNS issues inside WSL**: try
+  `wsl -d aidaptivclaw -u root -e bash -c "ping -c1 archive.ubuntu.com"`.
+  If it fails, see Microsoft's [WSL DNS guide](https://learn.microsoft.com/windows/wsl/networking#dns-issues).
+
+After fixing the root cause, retry provisioning without re-extracting the
+installer:
+
+```powershell
+powershell -File "C:\Program Files\aiDAPTIVClaw\post-install.ps1" `
+    -AppDir "C:\Program Files\aiDAPTIVClaw" -Phase 2
+```
+
+`-Phase 2` automatically unregisters the half-baked distro and starts
+fresh. The full provisioning log is appended to `install.log`.
 
 ### "Gateway didn't start" dialog after reboot
 
