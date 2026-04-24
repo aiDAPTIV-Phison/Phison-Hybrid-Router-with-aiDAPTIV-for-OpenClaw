@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
-# Provision a vanilla Ubuntu 24.04 WSL rootfs into the shippable
-# `aidaptivclaw` rootfs. Runs as root inside the throwaway build distro
-# orchestrated by `scripts/build-rootfs.ps1`.
+# Provision the `aidaptivclaw` WSL distro on the customer machine.
+# Runs as root inside the customer's freshly-imported Ubuntu 24.04 base
+# rootfs, orchestrated by `installer/post-install.ps1` (Phase 2).
 #
-# Inputs (pre-staged by the orchestrator):
-#   /tmp/openclaw-src/         OpenClaw source tree (from `git archive HEAD`)
-#   /tmp/rootfs-config/        wsl.conf + openclaw-gateway.service
+# Inputs (pre-staged into the customer's distro by post-install.ps1):
+#   /tmp/openclaw-source.tar.gz  OpenClaw source tarball (from `git archive HEAD`)
+#   /tmp/rootfs-config/          wsl.conf + openclaw-gateway.service
 #
 # Environment overrides:
 #   NODE_VERSION (default: 22.11.0)
 #   PNPM_VERSION (default: 9.12.0)
+#
+# Network: this script REQUIRES internet access (apt, nodejs.org,
+# github.com for pnpm, npm registry). If install fails partway through,
+# post-install.ps1 will `wsl --unregister aidaptivclaw` and the user can
+# retry once network is restored.
 set -euo pipefail
 
 NODE_VERSION="${NODE_VERSION:-22.11.0}"
@@ -52,18 +57,24 @@ ln -sf /opt/pnpm/pnpm /usr/local/bin/pnpm
 #    nologin shell + no sudo group => process cannot escalate even if
 #    compromised, even if it manages to spawn a shell.
 log "[4/8] Creating openclaw user..."
-useradd --create-home --uid 1000 --shell /usr/sbin/nologin openclaw
+if ! id -u openclaw >/dev/null 2>&1; then
+    useradd --create-home --uid 1000 --shell /usr/sbin/nologin openclaw
+fi
 
-# 5. Build OpenClaw. We build as root for simplicity and chown to openclaw
-#    at the end — building as the runtime user would require pre-creating
-#    a sudo-less writable scratch area, which adds complexity for no gain
-#    (build artifacts are shipped read-only).
+# 5. Build OpenClaw. Source arrives as a tarball produced by `git archive`
+#    on the build machine and shipped inside the .exe; only commit-tracked
+#    files are present (no node_modules / .git noise).
+#    We build as root for simplicity and chown to openclaw at the end.
 log "[5/8] Building OpenClaw..."
-test -d /tmp/openclaw-src || {
-    echo "ERROR: /tmp/openclaw-src missing — orchestrator must stage source first" >&2
+SRC_TARBALL="/tmp/openclaw-source.tar.gz"
+SRC_DIR="/tmp/openclaw-src"
+test -f "${SRC_TARBALL}" || {
+    echo "ERROR: ${SRC_TARBALL} missing — orchestrator must stage source first" >&2
     exit 1
 }
-cd /tmp/openclaw-src
+mkdir -p "${SRC_DIR}"
+tar -xzf "${SRC_TARBALL}" -C "${SRC_DIR}"
+cd "${SRC_DIR}"
 pnpm install --ignore-scripts
 # Native modules used by OpenClaw — explicit rebuild keeps the install
 # step lean (--ignore-scripts above) while still producing working binaries.
@@ -72,11 +83,11 @@ pnpm build:docker
 pnpm ui:build
 
 mkdir -p /opt/openclaw
-cp -a /tmp/openclaw-src/. /opt/openclaw/
+cp -a "${SRC_DIR}"/. /opt/openclaw/
 chown -R openclaw:openclaw /opt/openclaw
-rm -rf /tmp/openclaw-src
+rm -rf "${SRC_DIR}" "${SRC_TARBALL}"
 
-# 6. Install WSL boot config + systemd unit (created in Task 1.2).
+# 6. Install WSL boot config + systemd unit.
 log "[6/8] Installing wsl.conf and systemd unit..."
 install -m 0644 /tmp/rootfs-config/wsl.conf /etc/wsl.conf
 install -m 0644 /tmp/rootfs-config/openclaw-gateway.service \
@@ -92,12 +103,13 @@ install -d -m 0755 -o openclaw -g openclaw \
     /home/openclaw/.openclaw \
     /home/openclaw/readonly
 
-# 8. Shrink the rootfs. apt caches and build tooling are not needed at
-#    runtime and add ~150MB to the shipped tarball.
+# 8. Shrink the distro. apt caches and build tooling are not needed at
+#    runtime and add ~150MB. We keep the customer's distro small even
+#    though it is no longer "shipped" (the build happens on their box).
 log "[8/8] Cleaning up..."
 apt-get purge -y build-essential || true
 apt-get autoremove -y
 apt-get clean
 rm -rf /var/lib/apt/lists/* /var/cache/apt /tmp/* /var/tmp/* /root/.cache /root/.npm
 
-log "Done. Rootfs ready for export."
+log "Done. Distro provisioned."
