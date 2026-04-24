@@ -1,7 +1,7 @@
 ; aiDAPTIVClaw Windows Installer - Inno Setup Script (WSL2 sandbox, Q2=C online build)
 ;
 ; Ships:
-;   - Canonical's vanilla Ubuntu 24.04 WSL base rootfs (ubuntu-base.tar.gz, ~50 MB)
+;   - Canonical's vanilla Ubuntu 24.04 WSL base rootfs (ubuntu-base.tar.gz, ~340 MB)
 ;   - OpenClaw source tarball (openclaw-source.tar.gz, ~10-30 MB, from `git archive HEAD`)
 ;   - rootfs config files (wsl.conf, openclaw-gateway.service, provision.sh)
 ;   - Windows-side launcher + dual-phase post-install.ps1

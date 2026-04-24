@@ -9,7 +9,7 @@
 > The original plan baked OpenClaw + Node.js + apt packages into a pre-built `aidaptivclaw.tar.gz` rootfs at build time, requiring the build machine to have WSL2 + VT-x. This blocked developers whose CPU only has VT-d, not VT-x.
 >
 > The new design ships:
->   1. A vanilla **Canonical Ubuntu 24.04 WSL base rootfs** (~50 MB, downloaded once at build time and cached)
+>   1. A vanilla **Canonical Ubuntu 24.04 WSL base rootfs** (~340 MB, downloaded once at build time and cached). Source URL: `https://cloud-images.ubuntu.com/wsl/releases/24.04/current/ubuntu-noble-wsl-amd64-wsl.rootfs.tar.gz` — the older `/wsl/<codename>/current/` path was deprecated by Canonical in 2025 and now only ships manifests.
 >   2. **OpenClaw source code** packed via `git archive HEAD` (~10–30 MB)
 >   3. The same `wsl.conf`, `openclaw-gateway.service`, and `provision.sh`
 >

@@ -6,7 +6,7 @@
     Pipeline (WSL2 sandbox, online build flavor — Q2=C):
       1. Validate Inno Setup Compiler is installed.
       2. Cache Canonical's vanilla Ubuntu 24.04 WSL base rootfs at
-         installer/rootfs/ubuntu-base.tar.gz (~50 MB, downloaded once).
+         installer/rootfs/ubuntu-base.tar.gz (~340 MB, downloaded once).
       3. Pack git-tracked source via `git archive --format=tar.gz HEAD`
          into installer/rootfs/openclaw-source.tar.gz.
       4. Run Inno Setup Compiler against installer/openclaw.iss.
@@ -48,7 +48,14 @@ $IssFile       = Join-Path $InstallerDir "openclaw.iss"
 
 # Canonical's official Ubuntu 24.04 WSL base rootfs. Same image MS Store
 # ships but with a stable URL suitable for unattended download.
-$BaseUrl = "https://cloud-images.ubuntu.com/wsl/noble/current/ubuntu-noble-wsl-amd64-wsl.rootfs.tar.gz"
+#
+# NOTE: Canonical removed `.rootfs.tar.gz` from `/wsl/<codename>/current/`
+# in 2025 (only manifests left). The traditional tarball lives under
+# `/wsl/releases/24.04/current/` instead. Avoid the new `.wsl` format
+# from `releases.ubuntu.com/noble/`: it requires `wsl --import --from-file`
+# which only works on customer machines with WSL 2.4.10+, raising the
+# minimum-WSL-version bar without any benefit for our pipeline.
+$BaseUrl = "https://cloud-images.ubuntu.com/wsl/releases/24.04/current/ubuntu-noble-wsl-amd64-wsl.rootfs.tar.gz"
 
 if (-not $AppVersion) {
     $PackageJson = Get-Content (Join-Path $RepoRoot "package.json") -Raw | ConvertFrom-Json

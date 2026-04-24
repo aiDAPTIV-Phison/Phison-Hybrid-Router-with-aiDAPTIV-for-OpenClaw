@@ -9,10 +9,10 @@ inside the sandbox. Your Windows machine never installs Node.js, never
 runs the OpenClaw build outside WSL, and never grants the agent direct
 read/write access to your Windows file system outside the sandbox.
 
-> **Why online build?** Smaller installer (~150 MB instead of ~1 GB),
-> and the build machine doesn't need WSL2/VT-x to produce the .exe.
-> Trade-off: first install on the customer machine takes ~15-30 min and
-> requires internet access during that window.
+> **Why online build?** Smaller installer (~400 MB vs. ~1 GB for a
+> pre-built rootfs) and the build machine doesn't need WSL2/VT-x to
+> produce the .exe. Trade-off: first install on the customer machine
+> takes ~15-30 min and requires internet access during that window.
 
 > Design rationale: see [docs/plans/2026-04-23-wsl-sandbox-design.md](../plans/2026-04-23-wsl-sandbox-design.md)
 > and [docs/plans/2026-04-23-wsl-sandbox-brainstorm-summary.md](../plans/2026-04-23-wsl-sandbox-brainstorm-summary.md).

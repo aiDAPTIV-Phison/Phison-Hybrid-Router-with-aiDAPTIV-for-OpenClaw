@@ -87,7 +87,7 @@
 |---|---|---|---|
 | A. 自帶 Ubuntu 24.04 預 build rootfs | installer 內含 ~800MB-1.5GB 的 `.tar.gz`，匯入成獨立 distro，OpenClaw 在 CI 已 build 好 | 安裝快（2-6 分鐘）、不需網路、UX 最佳 | Installer 變大；build 機需要 WSL2/VT-x 才能產出 rootfs |
 | B. 用使用者既有 Ubuntu | 安裝時 setup script 在使用者的 Ubuntu 內 build | Installer 小 | 跟使用者其他 WSL 工作共用環境，沙箱意義削弱 |
-| **C. 自帶 base rootfs + 線上 build** ✅ | 內含乾淨 Ubuntu base（~50 MB）+ OpenClaw source（git archive，~10–30 MB），首次啟動在客戶機上 `apt install + pnpm build` | Build 機只需 Inno Setup（無 VT-x 限制）；使用者環境一致性由 base rootfs 鎖定 | 首次安裝 15-30 分鐘 + 必須有網路 |
+| **C. 自帶 base rootfs + 線上 build** ✅ | 內含乾淨 Ubuntu base（~340 MB）+ OpenClaw source（git archive，~10–30 MB），首次啟動在客戶機上 `apt install + pnpm build` | Build 機只需 Inno Setup（無 VT-x 限制）；使用者環境一致性由 base rootfs 鎖定 | 首次安裝 15-30 分鐘 + 必須有網路；installer ~400 MB |
 
 **選 C 的最終理由**（2026-04-23 從 A 改 C）：
 - A 要求 build 機具備 VT-x + WSL2，限制了開發者群（例如目前 build 機只有 VT-d）
