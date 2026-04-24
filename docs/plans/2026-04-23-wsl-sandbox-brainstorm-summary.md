@@ -386,3 +386,47 @@
 - 寫到 `docs/plans/2026-04-23-wsl-sandbox-design.md`
 - 內容：詳細架構圖、檔案/目錄結構、`installer/openclaw.iss` 改動點、`post-install.cmd` 改動點、systemd unit 完整內容、launcher 腳本內容、CI build pipeline 變更、testing plan、rollout plan、已知 risks 與 mitigation
 
+---
+
+## 7. 實作期間的判斷修正紀錄
+
+### 2026-04-24：`provision.sh` 的 build 指令從 `pnpm build:docker` 改回 `pnpm build`
+
+**最初判斷**：把 WSL 沙盒類比為 Docker 容器，所以選 `pnpm build:docker`。
+
+**為何錯**：
+- `pnpm build:docker` = `pnpm build` 減去第一步 `canvas:a2ui:bundle`。
+- 那一步會 `tsc` 編譯 `vendor/a2ui/renderers/lit/` 並用 `rolldown` 打包成 `src/canvas-host/a2ui/a2ui.bundle.js`。
+- Docker image 透過 `.dockerignore` 排掉 `vendor/` 與 `apps/`，所以容器內**沒有** a2ui 原始碼可編，必須跳過。
+- 我們的 installer 用 `git archive HEAD` 包源碼，`vendor/` 與 `apps/` 都在 tarball 裡（已用 `git ls-files` 驗證），bundle 步驟可以也應該跑。
+- 跳過會導致執行期 `a2ui.bundle.js` 缺檔，任何 A2UI canvas 渲染（agent → UI 視覺化）都會壞。
+
+**修正**：`installer/rootfs/provision.sh` 改用 `pnpm build`；同步更新 `docs/plans/2026-04-23-wsl-sandbox-design.md` 與 `installer/post-install.ps1` 的相關註解。OpenClaw 上游所有官方安裝/開發文件也都用 `pnpm build`，我們現在與之一致。
+
+### 2026-04-24：補回 wizard 雲端 provider 設定頁
+
+**問題**：WSL rewrite 過程把舊 installer 的 Cloud Provider wizard 頁（`CloudPage` + `configure-cloud.cjs`）整段移除了，沒搬去 Phase 2。後果：使用者裝完打開 OpenClaw，預設 model `openrouter/google/gemini-3.1-flash-lite-preview` 沒 key 直接失敗，必須手動編 `~/.openclaw/openclaw.json` 才能用。
+
+**設計決策**：
+
+1. **Provider 不綁定 OpenRouter** — 5 選 1 dropdown（OpenRouter / Google Gemini / Anthropic / OpenAI / Together AI）。雖然當前 template 是 OpenRouter-centric，但 user 明確要保留多 provider 選擇權。
+2. **Default model 用 2026-04 現況**（透過 WebSearch 查官方文件確認，不沿用 2025 那批已過期的 model id）：
+   - OpenRouter: `google/gemini-3.1-flash-lite-preview`
+   - Google: `gemini-3-flash-preview`
+   - Anthropic: `claude-sonnet-4-6`
+   - OpenAI: `gpt-5.4-mini`
+   - Together: `meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8`
+3. **跨 phase 資料流**：wizard 蒐集 → `install-options.ini` `[provider]` 區塊 → Phase 2 讀取 → patch `openclaw-template.json` → 寫到兩處（host `%USERPROFILE%\.openclaw\openclaw.json` + WSL `/home/openclaw/.openclaw/openclaw.json`）→ 從 ini 刪除 `[provider]` 區塊（apiKey 不長期留在 `{app}\` 下）。
+4. **三處 JSON patch**：
+   - `models.providers.<id>` ← `{baseUrl, apiKey, api, models}`（沿用原版 cjs）
+   - `plugins.entries.hybrid-gateway.config.models.cloud` ← `{provider, model}`（沿用原版 cjs）
+   - **`agents.defaults.model.primary` ← `<id>/<model>`**（修原版 cjs 的 bug，原版沒 patch 這裡導致使用者選 Anthropic 卻仍跑 OpenRouter）
+5. **API key 安全模型**：跟原版一樣 plain text 寫到 `install-options.ini`，但 Phase 2 一消費完立刻刪 `[provider]` 區塊（原版會永久留在 `openclaw.json`，新版至少把暴露窗口縮短到 build + reboot 期間）。Wizard 額外把 ApiKey edit 框遮罩成 `*****`（原版沒做）。
+6. **跳過情境**：使用者把 API Key 留空 → wizard 仍 Next，Phase 2 偵測到空 key 就直接複製 unpatched template 到兩處，使用者裝完從 OpenClaw UI 自己設定。
+
+**異動範圍**：
+- `installer/openclaw.iss`：+`CloudPage` + 4 個 provider helper + 擴充 `WriteInstallOptions`，刪 `WriteConfigFile` 與 `ReplaceSubstring`（功能搬去 PowerShell）
+- `installer/post-install.ps1`：+`Build-OpenClawConfig` / `Write-WindowsHostConfig` / `Push-WslGuestConfig` / `Apply-CloudProviderConfig` / `Remove-InstallOptionsSecrets`；擴充 `Read-InstallOptions` 多讀 `[provider]` 區塊；在 Phase 2 provision 成功後、`wsl --terminate` 前呼叫 `Apply-CloudProviderConfig`。
+- `installer/openclaw-template.json`：不動（被 PowerShell 當乾淨基底）。
+
+

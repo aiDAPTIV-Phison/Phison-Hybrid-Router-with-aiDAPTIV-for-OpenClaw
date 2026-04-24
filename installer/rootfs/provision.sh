@@ -8,7 +8,7 @@
 #   /tmp/rootfs-config/          wsl.conf + openclaw-gateway.service
 #
 # Environment overrides:
-#   NODE_VERSION (default: 22.11.0)
+#   NODE_VERSION (default: 22.17.0)
 #   PNPM_VERSION (default: 9.12.0)
 #
 # Network: this script REQUIRES internet access (apt, nodejs.org,
@@ -17,7 +17,10 @@
 # retry once network is restored.
 set -euo pipefail
 
-NODE_VERSION="${NODE_VERSION:-22.11.0}"
+# Node.js LTS line. Pin >= 22.16.0 because some transitive deps now
+# declare engines.node >= 22.16.0 and pnpm refuses to run lifecycle
+# scripts (e.g. `pnpm build`) when engine-strict is enforced.
+NODE_VERSION="${NODE_VERSION:-22.17.0}"
 PNPM_VERSION="${PNPM_VERSION:-9.12.0}"
 
 export DEBIAN_FRONTEND=noninteractive
@@ -56,7 +59,20 @@ ln -sf /opt/pnpm/pnpm /usr/local/bin/pnpm
 # 4. Non-root runtime user. uid 1000 is conventional for the first user.
 #    nologin shell + no sudo group => process cannot escalate even if
 #    compromised, even if it manages to spawn a shell.
+#
+#    Ubuntu 24.04 cloud rootfs (what `ubuntu-base.tar.gz` ships) comes
+#    with a pre-baked `ubuntu` user occupying UID 1000. We do not need
+#    that account, and leaving it would force openclaw to a higher UID.
+#    Removing it keeps openclaw at the conventional first-non-system UID
+#    and reduces the attack surface (one fewer shell-capable account).
 log "[4/8] Creating openclaw user..."
+if id -u ubuntu >/dev/null 2>&1; then
+    log "[4/8] Removing default 'ubuntu' user to free UID 1000..."
+    # `pkill -u ubuntu` would be unsafe here; userdel -f handles a stale
+    # session if any. We tolerate non-zero exit (e.g. user already gone
+    # in a re-run scenario) so the script stays idempotent.
+    userdel --remove --force ubuntu 2>/dev/null || true
+fi
 if ! id -u openclaw >/dev/null 2>&1; then
     useradd --create-home --uid 1000 --shell /usr/sbin/nologin openclaw
 fi
@@ -79,7 +95,15 @@ pnpm install --ignore-scripts
 # Native modules used by OpenClaw — explicit rebuild keeps the install
 # step lean (--ignore-scripts above) while still producing working binaries.
 pnpm rebuild esbuild sharp koffi protobufjs
-pnpm build:docker
+# Use `pnpm build` (NOT `build:docker`). The `build:docker` variant skips
+# `canvas:a2ui:bundle` because the official Docker build excludes
+# `vendor/` and `apps/` via .dockerignore — there is no a2ui source to
+# compile inside that image. Our installer ships the source via
+# `git archive HEAD` which DOES include vendor/ and apps/, so the
+# bundle step can and must run; otherwise `src/canvas-host/a2ui/
+# a2ui.bundle.js` will be missing at runtime and any A2UI canvas
+# rendering in the UI will fail to load.
+pnpm build
 pnpm ui:build
 
 mkdir -p /opt/openclaw

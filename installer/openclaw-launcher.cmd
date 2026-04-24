@@ -3,6 +3,11 @@ setlocal
 
 REM aiDAPTIVClaw launcher (WSL2 sandbox edition).
 REM
+REM 0. Verify the install actually completed (.install-complete marker).
+REM    Defense in depth: shortcuts are created only on Phase 2 success,
+REM    but if a stale .lnk somehow survives a failed install (or a user
+REM    copied one over) we still want a friendly error instead of a
+REM    cryptic "wsl distro not found" later.
 REM 1. Wake the `aidaptivclaw` WSL distro. systemd starts the gateway
 REM    automatically (openclaw-gateway.service is enabled in the rootfs).
 REM 2. Wait until the gateway responds on localhost:18789. WSL2 default
@@ -15,6 +20,13 @@ REM Invoked from openclaw-launcher.vbs (so no console window flashes).
 set DISTRO=aidaptivclaw
 set GATEWAY_URL=http://localhost:18789/
 set FALLBACK_URL=http://localhost:18789/
+set MARKER=%~dp0.install-complete
+
+REM 0. Install-complete marker check.
+if not exist "%MARKER%" (
+    powershell -NoProfile -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('aiDAPTIVClaw is not fully installed.`n`nThe install-complete marker is missing, which usually means Phase 2 (the OpenClaw build inside WSL) did not finish.`n`nPlease re-run the installer, or open Programs and Features and uninstall + reinstall.`n`nLog: %~dp0install.log', 'aiDAPTIVClaw not ready', 'OK', 'Warning')" >nul 2>&1
+    exit /b 1
+)
 
 REM 1. Boot the distro (silent no-op command). Triggers systemd if cold.
 wsl.exe -d %DISTRO% -u root -e /bin/true >nul 2>&1

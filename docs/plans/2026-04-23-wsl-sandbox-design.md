@@ -148,7 +148,10 @@ test -d /tmp/openclaw-src || { echo "ERROR: /tmp/openclaw-src missing — orches
 cd /tmp/openclaw-src
 pnpm install --ignore-scripts
 pnpm rebuild esbuild sharp koffi protobufjs
-pnpm build:docker
+# Use `pnpm build` (NOT `build:docker`): our installer ships vendor/ and
+# apps/ via `git archive`, so canvas:a2ui:bundle can run. `build:docker`
+# is for Docker images that exclude those dirs via .dockerignore.
+pnpm build
 pnpm ui:build
 
 mkdir -p /opt/openclaw
@@ -508,7 +511,7 @@ Expected:
 - Warm run: ~5-10 min (base rootfs cached, only OpenClaw rebuild).
 - Output: `installer\rootfs\aidaptivclaw.tar.gz`, size approximately 500MB-1.2GB.
 
-If `pnpm install` or `build:docker` fails, the issue is in OpenClaw itself, not the pipeline. Inspect with `-KeepBuildDistro` then `wsl -d aidaptivclaw-build -u root` to drop into a shell.
+If `pnpm install` or `pnpm build` fails, the issue is in OpenClaw itself, not the pipeline. Inspect with `-KeepBuildDistro` then `wsl -d aidaptivclaw-build -u root` to drop into a shell.
 
 **Step 3: Verify the tarball imports correctly**
 
@@ -1331,6 +1334,106 @@ This template is now baked into the rootfs at build time (we'll wire that in Tas
 ```bash
 git add installer/openclaw-template.json
 git commit -m "installer: update template default workspace to WSL path"
+```
+
+---
+
+### Task 2.7: Cloud Provider configuration (wizard CloudPage → openclaw.json)
+
+**Goal:** Restore the cloud-provider configuration UX that the WSL rewrite accidentally dropped, without falling back into the old "key written to host before install completes" risk model.
+
+**Files:**
+- Modify: `installer/openclaw.iss` — add `CloudPage` (wizard custom page after `wpSelectTasks`), 4 provider-metadata helpers (`GetProviderId` / `GetProviderBaseUrl` / `GetProviderApi` / `GetProviderDefaultModel`), extend `WriteInstallOptions` to persist `[provider]` section, delete `WriteConfigFile` + `ReplaceSubstring` (functionality moves to PowerShell).
+- Modify: `installer/post-install.ps1` — extend `Read-InstallOptions` to load `[provider]` section, add 5 new functions (`Set-JsonProperty`, `Build-OpenClawConfig`, `Convert-ConfigToJson`, `Write-WindowsHostConfig`, `Push-WslGuestConfig`, `Apply-CloudProviderConfig`, `Remove-InstallOptionsSecrets`), wire `Apply-CloudProviderConfig` + `Remove-InstallOptionsSecrets` into `Invoke-Phase2` AFTER provision.sh succeeds and BEFORE `wsl --terminate`.
+- Unchanged: `installer/openclaw-template.json` (used as the canonical pre-patch base by `Build-OpenClawConfig`).
+
+**Provider metadata table** (5 providers, default model ids reflect 2026-04 frontier-tier "fast / cheap" choices, verified against each provider's official docs):
+
+| idx | label                  | id           | baseUrl                                           | api                    | default model |
+|-----|------------------------|--------------|---------------------------------------------------|------------------------|---------------|
+| 0   | OpenRouter             | `openrouter` | `https://openrouter.ai/api/v1`                    | `openai-completions`   | `google/gemini-3.1-flash-lite-preview` |
+| 1   | Google Gemini          | `google`     | `https://generativelanguage.googleapis.com/v1beta` | `google-generative-ai` | `gemini-3-flash-preview` |
+| 2   | Anthropic (Claude)     | `anthropic`  | `https://api.anthropic.com`                       | `anthropic-messages`   | `claude-sonnet-4-6` |
+| 3   | OpenAI                 | `openai`     | `https://api.openai.com/v1`                       | `openai-completions`   | `gpt-5.4-mini` |
+| 4   | Together AI            | `together`   | `https://api.together.xyz/v1`                     | `openai-completions`   | `meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8` |
+
+**Cross-phase data flow:**
+
+```
+Phase 1 (Inno wizard)                              Phase 2 (post-install.ps1)
+───────────────────────                            ──────────────────────────
+CloudPage:                                         Read install-options.ini
+  ProviderCombo + ApiKeyEdit                          ↓
+  + ModelEdit                                      Apply-CloudProviderConfig:
+       │                                             ├─ Build-OpenClawConfig
+       ▼                                             │    (load template,
+WriteInstallOptions                                  │     patch 3 sites)
+  → install-options.ini                              ├─ Write-WindowsHostConfig
+       │  [install] / [shortcuts]                    │    (%USERPROFILE%\.openclaw\)
+       │  [provider] id, baseUrl, api,               └─ Push-WslGuestConfig
+       │             model, apiKey                        (wsl install -m 0640
+       ▼                                                  -o openclaw -g openclaw)
+post-install.ps1 -Phase 1                              ↓
+                                                   Remove-InstallOptionsSecrets
+                                                     (strip [provider] section
+                                                      from .ini, apiKey wiped)
+                                                       ↓
+                                                   wsl --terminate → systemd cold-boot
+                                                       ↓
+                                                   gateway service starts and reads
+                                                   /home/openclaw/.openclaw/openclaw.json
+```
+
+**Three patch sites** in `Build-OpenClawConfig` (mirror legacy `configure-cloud.cjs` plus one extra fix):
+
+```jsonc
+// Patch 1: insert/update provider entry, preserve any existing fields
+"models.providers.<id>" = { baseUrl, apiKey, api, models: existing.models ?? [] }
+
+// Patch 2: point hybrid-gateway's cloud tier at the chosen provider
+"plugins.entries.hybrid-gateway.config.models.cloud" = { provider: <id>, model }
+
+// Patch 3 (NEW): retarget agents.defaults.model.primary
+//   The legacy configure-cloud.cjs forgot this — without it, choosing
+//   e.g. Anthropic on the wizard would silently leave the agent's
+//   primary model pointing at openrouter/google/gemini-3.1-flash-lite-preview,
+//   defeating the whole point of letting the user pick a provider.
+"agents.defaults.model.primary" = "<id>/<model>"
+```
+
+**Security notes:**
+
+- `ApiKeyEdit.PasswordChar = '*'` masks the key on screen (legacy installer didn't).
+- API key travels through `install-options.ini` `[provider]` section in plain text — same risk model as the legacy installer (which wrote it directly to `%USERPROFILE%\.openclaw\openclaw.json`). Exposure window: from Phase 1 wizard finish until Phase 2 consumes it (~build + reboot + provision = 30–60 min). Mitigation: `Remove-InstallOptionsSecrets` strips the `[provider]` section the instant Phase 2 finishes patching.
+- WSL guest copy is written with `install -m 0640 -o openclaw -g openclaw` so only the openclaw user (and root) can read it — gateway can read, no other process inside the distro can.
+- Host-side temp file in `%TEMP%` (used by `Push-WslGuestConfig` to bridge to WSL via `wslpath`) is deleted in a `finally` block, even on error.
+
+**Empty-key path:** If the user leaves API Key blank, Phase 2 detects empty `ProviderApiKey` and writes the unpatched template to both locations. Gateway boots without errors but any LLM call fails until the user fills in a key from the OpenClaw web UI.
+
+**Verification:**
+
+```powershell
+# After install completes, confirm both copies exist and contain the chosen provider:
+Get-Content "$env:USERPROFILE\.openclaw\openclaw.json" | ConvertFrom-Json |
+  Select-Object -ExpandProperty agents | Select-Object -ExpandProperty defaults |
+  Select-Object -ExpandProperty model | Select-Object -ExpandProperty primary
+# Expected: matches "<id>/<model>" from the wizard.
+
+wsl -d aidaptivclaw -u openclaw -- cat /home/openclaw/.openclaw/openclaw.json |
+  Select-String '"primary"'
+# Expected: same value.
+
+# install-options.ini should no longer contain [provider]:
+Get-Content "$env:ProgramFiles\aiDAPTIVClaw\install-options.ini" |
+  Select-String '\[provider\]|apiKey='
+# Expected: no matches.
+```
+
+**Step: Commit**
+
+```bash
+git add installer/openclaw.iss installer/post-install.ps1
+git commit -m "installer: restore cloud provider wizard page (CloudPage) and seed openclaw.json in Phase 2"
 ```
 
 ---
