@@ -5,9 +5,11 @@
 >
 > **目標讀者**：團隊成員、code reviewer、未來接手的工程師。
 > **撰寫日期**：2026-04-23
-> **狀態**：Implemented (2026-04-23) — 設計文件 [2026-04-23-wsl-sandbox-design.md](./2026-04-23-wsl-sandbox-design.md) 已完成；實作分散在 `installer/`、`scripts/build-rootfs.ps1`、`scripts/build-installer.ps1`、`src/commands/dashboard.ts` 與 `docs/install/windows.md`。
+> **狀態**：Implemented (2026-04-23) — 設計文件 [2026-04-23-wsl-sandbox-design.md](./2026-04-23-wsl-sandbox-design.md) 已完成；實作分散在 `installer/`、`scripts/build-installer.ps1`、`src/commands/dashboard.ts` 與 `docs/install/windows.md`。
 >
-> **未驗證項目**：開發機未安裝 WSL，故 Task 0.1 / 1.4 / 4.1 / 4.2（端到端 build + 安裝煙霧測試）尚未執行；需在具備 WSL2 的環境（含 BIOS VT-x 啟用）由 QA 完成驗證後才算 production ready。
+> **2026-04-23 後修訂**：Q2 從 A（離線 pre-build rootfs）改為 **C（自帶 base rootfs + 線上 build）**。`scripts/build-rootfs.ps1` 已刪除；build 機不再需要 WSL2/VT-x，只需 Inno Setup。客戶機首次安裝時間從 2–6 分鐘改為 15–30 分鐘，且必須有網路。
+>
+> **未驗證項目**：Task 0.1 / 4.1 / 4.2（端到端 build + 安裝煙霧測試）需在具備 WSL2 的客戶機（含 BIOS VT-x 啟用）由 QA 完成驗證後才算 production ready。Build 機端 (`scripts/build-installer.ps1` + `iscc`) 可在任何 Windows + Inno Setup 6 環境驗證。
 
 ---
 
@@ -83,13 +85,18 @@
 
 | 選項 | 說明 | 優點 | 缺點 |
 |---|---|---|---|
-| **A. 自帶 Ubuntu 24.04 預 build rootfs** ✅ | installer 內含 ~800MB-1.5GB 的 `.tar.gz`，匯入成獨立 distro，OpenClaw 在 CI 已 build 好 | 安裝快（2-6 分鐘）、不需網路、UX 最佳 | Installer 變大；CI 每次 release 多花 7-20 分鐘 build rootfs |
+| A. 自帶 Ubuntu 24.04 預 build rootfs | installer 內含 ~800MB-1.5GB 的 `.tar.gz`，匯入成獨立 distro，OpenClaw 在 CI 已 build 好 | 安裝快（2-6 分鐘）、不需網路、UX 最佳 | Installer 變大；build 機需要 WSL2/VT-x 才能產出 rootfs |
 | B. 用使用者既有 Ubuntu | 安裝時 setup script 在使用者的 Ubuntu 內 build | Installer 小 | 跟使用者其他 WSL 工作共用環境，沙箱意義削弱 |
-| C. 自帶 base rootfs + 線上 build | 內含乾淨 Ubuntu base，首次啟動再線上 `apt install + pnpm build` | Installer 中等 | 首次安裝要 10-20 分鐘 + 必須有網路 |
+| **C. 自帶 base rootfs + 線上 build** ✅ | 內含乾淨 Ubuntu base（~50 MB）+ OpenClaw source（git archive，~10–30 MB），首次啟動在客戶機上 `apt install + pnpm build` | Build 機只需 Inno Setup（無 VT-x 限制）；使用者環境一致性由 base rootfs 鎖定 | 首次安裝 15-30 分鐘 + 必須有網路 |
 
-**選 A 的理由**：B 違反沙箱初衷（使用者自己的 Ubuntu 裡有 SSH key、其他專案 source code，OpenClaw 全看得到）。C 安裝體驗差且要網路。A 雖然 installer 變大，但對「離線可裝」這點對企業客戶反而是賣點，且使用者體驗最佳。
+**選 C 的最終理由**（2026-04-23 從 A 改 C）：
+- A 要求 build 機具備 VT-x + WSL2，限制了開發者群（例如目前 build 機只有 VT-d）
+- A 的 ~1 GB installer 對下載/上傳通路是負擔
+- 線上 build 的「20 分鐘 + 需網路」對個人開發者目標客群可接受
+- C 仍保留「sandbox 完整性」(自帶 base rootfs，不共用使用者既有 distro)，相比 B 安全性無妥協
+- 已知 trade-off：純離線環境（無網路企業客戶）裝不了；後續若有此需求再額外發 A 版本
 
-**生活化比喻**：A 是「整間裝潢好的房子直接搬給你」；B 是「請借住你家空房間」；C 是「給你個毛胚屋，搬進去再裝潢」。
+**生活化比喻**：C 是「給你毛胚屋（base rootfs）+ 一份裝潢圖（source code）+ 一份家具清單（pnpm install），到了現場才裝潢起來」。
 
 ---
 

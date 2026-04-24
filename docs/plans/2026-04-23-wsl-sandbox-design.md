@@ -4,15 +4,35 @@
 >
 > Each task is bite-sized (2-15 min). Because this is installer/OS-level work, traditional unit tests don't apply; each task ends with a concrete verification command and expected output instead.
 
+> **🔄 REVISION 2026-04-23 — switched from Q2=A (offline) to Q2=C (online build)**
+>
+> The original plan baked OpenClaw + Node.js + apt packages into a pre-built `aidaptivclaw.tar.gz` rootfs at build time, requiring the build machine to have WSL2 + VT-x. This blocked developers whose CPU only has VT-d, not VT-x.
+>
+> The new design ships:
+>   1. A vanilla **Canonical Ubuntu 24.04 WSL base rootfs** (~50 MB, downloaded once at build time and cached)
+>   2. **OpenClaw source code** packed via `git archive HEAD` (~10–30 MB)
+>   3. The same `wsl.conf`, `openclaw-gateway.service`, and `provision.sh`
+>
+> All inside a single Inno Setup `.exe`. The build machine no longer needs WSL or VT-x; it only needs Inno Setup 6 + git + PowerShell.
+>
+> Provisioning (apt install + pnpm install + build) now happens on the **customer machine** during Phase 2 of `post-install.ps1`. Install time stretches from ~3 min (offline) to **15–30 min (online)**, and the customer machine **must have internet** during install.
+>
+> Sections below have been re-tagged accordingly:
+> - **Phase 1** (rootfs build pipeline): files renamed, `scripts/build-rootfs.ps1` deleted, `provision.sh` modified to read source from a tarball.
+> - **Phase 3 / Task 3.1** (`scripts/build-installer.ps1`): no longer invokes WSL; just downloads Ubuntu base, runs `git archive`, and calls `iscc`.
+> - **Phase 2 / Task 2.2** (`post-install.ps1`): Phase 2 now imports base rootfs, stages source/configs, and runs `provision.sh` inside the customer's distro.
+>
+> The original code blocks below are kept for historical traceability; ground truth is the actual files in `installer/` and `scripts/`.
+
 **Goal:** Convert aiDAPTIVClaw from a native Windows installation (full user privileges) into a WSL2-confined installation (non-root user inside an isolated Ubuntu 24.04 distro with systemd hardening), so OpenClaw can no longer read arbitrary Windows files or escalate privileges if compromised.
 
-**Architecture:** Installer ships a pre-built Ubuntu 24.04 rootfs (`aidaptivclaw.tar.gz`) containing a fully built OpenClaw under `/opt/openclaw`. On install, `wsl --import` registers the rootfs as a private distro `aidaptivclaw`. A systemd unit (`openclaw-gateway.service`) starts the gateway as the non-root `openclaw` user with hardening directives confining writes to `/home/openclaw/{workspace,.openclaw}` and `/tmp`. The Windows launcher only triggers `wsl.exe -d aidaptivclaw` and opens the browser at `http://localhost:18789` (reachable via WSL2 default localhost forwarding).
+**Architecture (Q2=C, online build):** Installer ships a vanilla Ubuntu 24.04 WSL base rootfs + an `openclaw-source.tar.gz` produced by `git archive HEAD` + `provision.sh` + `wsl.conf` + `openclaw-gateway.service`. On install, `wsl --import` registers the base rootfs as the private distro `aidaptivclaw`, then `provision.sh` runs **inside the customer's distro** to install Node.js + pnpm + build OpenClaw under `/opt/openclaw` and enable the systemd unit. Subsequent boots: the systemd unit (`openclaw-gateway.service`) starts the gateway as the non-root `openclaw` user with hardening directives confining writes to `/home/openclaw/{workspace,.openclaw}` and `/tmp`. The Windows launcher only triggers `wsl.exe -d aidaptivclaw` and opens the browser at `http://localhost:18789` (reachable via WSL2 default localhost forwarding).
 
-**Target-machine install flow (dual-phase, handles missing WSL):** `post-install.ps1` runs in two phases. Phase 1 verifies prerequisites — Windows version, CPU virtualization (hard-fail with BIOS instructions if disabled, since no API can fix BIOS), and WSL2. If WSL is missing, Phase 1 runs `wsl --install --no-distribution`, registers a one-shot HKCU RunOnce entry to fire Phase 2 after the required reboot, and exits with code 2 (Inno Setup interprets this as "reboot recommended"). If WSL is already present, Phase 1 short-circuits straight into Phase 2 in the same process — no reboot. Phase 2 imports the rootfs, patches `.wslconfig` with `vmIdleTimeout=-1`, boots the distro, waits for the gateway HTTP endpoint, opens the browser, and removes its own RunOnce entry. Failures at any stage produce friendly dialogs that link to `docs/install/windows.md` for self-service troubleshooting (BIOS enable, manual `wsl --install`, corporate Group Policy workarounds).
+**Target-machine install flow (dual-phase, handles missing WSL):** `post-install.ps1` runs in two phases. Phase 1 verifies prerequisites — Windows version, CPU virtualization (hard-fail with BIOS instructions if disabled, since no API can fix BIOS), and WSL2. If WSL is missing, Phase 1 runs `wsl --install --no-distribution`, registers a one-shot HKCU RunOnce entry to fire Phase 2 after the required reboot, and exits with code 2 (Inno Setup interprets this as "reboot recommended"). If WSL is already present, Phase 1 short-circuits straight into Phase 2 in the same process — no reboot. Phase 2 imports the **base** rootfs, stages source + configs into the distro, runs `provision.sh` (the long step: ~15–25 min, downloads packages, builds OpenClaw), patches `.wslconfig` with `vmIdleTimeout=-1`, boots the distro to start the gateway, waits for the gateway HTTP endpoint, opens the browser, and removes its own RunOnce entry. Failures at any stage produce friendly dialogs that link to `docs/install/windows.md` for self-service troubleshooting (BIOS enable, manual `wsl --install`, corporate Group Policy workarounds, network failures during apt/pnpm).
 
-**Build pipeline:** Rootfs is built natively in WSL (no Docker). A throwaway WSL distro is created from Canonical's official Ubuntu 24.04 WSL base rootfs, a bash provisioning script installs Node + pnpm + builds OpenClaw, then `wsl --export` produces the shippable tarball. Source code is injected into the build distro via `git archive HEAD | wsl -e tar -xf -` (no `/mnt/c` mount needed, only git-tracked files included).
+**Build pipeline (Q2=C):** No WSL on the build machine. `scripts/build-installer.ps1` (a) caches Canonical's official Ubuntu 24.04 WSL base rootfs to `installer/rootfs/ubuntu-base.tar.gz`, (b) packs git-tracked source via `git archive --format=tar.gz HEAD` to `installer/rootfs/openclaw-source.tar.gz`, then (c) invokes `iscc.exe` to bundle everything into the `.exe`.
 
-**Tech Stack:** Inno Setup (installer), Bash (rootfs provision script), WSL2, Ubuntu 24.04 (Canonical WSL rootfs), systemd, Node.js 22+, pnpm.
+**Tech Stack:** Inno Setup (installer), PowerShell + Bash (provisioning), WSL2, Ubuntu 24.04 (Canonical WSL rootfs), systemd, Node.js 22+, pnpm.
 
 **Reference:** Decisions are summarized in `docs/plans/2026-04-23-wsl-sandbox-brainstorm-summary.md`. Read that first for context on every "why".
 
