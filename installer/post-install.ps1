@@ -72,6 +72,23 @@ function Write-Log {
     try { Add-Content -Path $LogFile -Value $line } catch { }
 }
 
+function Invoke-NativeNoThrow {
+    # Run a script block with $ErrorActionPreference temporarily set to
+    # 'Continue'. Required for any native-command call that uses `2>&1 | ...`
+    # because PowerShell 5.1 wraps native stderr lines as ErrorRecord on
+    # the merged success stream, and the script-level $ErrorActionPreference
+    # = 'Stop' then elevates them to terminating exceptions BEFORE we get
+    # a chance to inspect $LASTEXITCODE. Callers must check $LASTEXITCODE.
+    param([Parameter(Mandatory)] [scriptblock]$Block)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $Block
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+}
+
 function Show-FatalDialog {
     param([string]$Title, [string]$Body)
     try {
@@ -94,14 +111,43 @@ function Show-InfoDialog {
 }
 
 function Test-VirtualizationEnabled {
-    # Returns $true if CPU virtualization (VT-x / AMD-V) is enabled at
-    # firmware level. WSL2 cannot run without this.
+    # WSL2 needs CPU virtualization (VT-x / AMD-V). Detection is brittle:
+    # `Win32_Processor.VirtualizationFirmwareEnabled` returns False / $null
+    # on many real configurations even when BIOS has it enabled — most
+    # commonly when another hypervisor (Hyper-V, HVCI/Memory Integrity,
+    # VMware) is already running and the firmware property becomes
+    # informational rather than authoritative. We check three signals and
+    # accept ANY positive answer; only fail when all three say "no".
+
+    # Signal 1: WMI firmware property (the unreliable one).
     try {
         $cpu = Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1
-        return [bool]$cpu.VirtualizationFirmwareEnabled
-    } catch {
-        return $false
+        if ($cpu -and $cpu.VirtualizationFirmwareEnabled -eq $true) {
+            Write-Log "VT detection: Win32_Processor.VirtualizationFirmwareEnabled=True"
+            return $true
+        }
+    } catch { }
+
+    # Signal 2: A hypervisor is already running. Authoritative — nothing
+    # can be running atop the CPU without VT-x being enabled at firmware.
+    try {
+        $sys = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+        if ($sys -and $sys.HypervisorPresent -eq $true) {
+            Write-Log "VT detection: HypervisorPresent=True (a hypervisor is already running)"
+            return $true
+        }
+    } catch { }
+
+    # Signal 3: `wsl --status` succeeds. WSL2 itself cannot start without
+    # VT-x, so if WSL is operational we know VT-x is on.
+    Invoke-NativeNoThrow { & wsl.exe --status 2>&1 | Out-Null }
+    if ($LASTEXITCODE -eq 0) {
+        Write-Log "VT detection: wsl --status returned 0"
+        return $true
     }
+
+    Write-Log "VT detection: all three signals negative (WMI firmware property=False/null, no hypervisor, wsl --status failed)"
+    return $false
 }
 
 function Test-WindowsVersionOk {
@@ -113,9 +159,40 @@ function Test-WindowsVersionOk {
     return $true
 }
 
-function Test-Wsl2Ready {
-    & wsl.exe --status 2>&1 | Out-Null
+function Test-WslKernelPresent {
+    # Lightweight check: `wsl --status` returns 0 once the kernel binaries
+    # have been deployed by `wsl --install`. Does NOT prove the VM service
+    # can start — that requires Test-VmComputeReady below.
+    Invoke-NativeNoThrow { & wsl.exe --status 2>&1 | Out-Null }
     return ($LASTEXITCODE -eq 0)
+}
+
+function Test-VmComputeReady {
+    # Authoritative check that WSL2 can actually create a VM. The Hyper-V
+    # Host Compute Service (`vmcompute`) is the component that backs every
+    # WSL2 distro, and `wsl --import` cannot run without it. After a fresh
+    # `wsl --install`, the service binaries are on disk but the service
+    # cannot start until Windows reboots — the Hyper-V hypervisor must be
+    # injected into the boot loader at boot time. Without this check we
+    # fall through to Phase 2 too early and `wsl --import` blows up with
+    # HCS_E_SERVICE_NOT_AVAILABLE.
+    $svc = Get-Service vmcompute -ErrorAction SilentlyContinue
+    if (-not $svc) { return $false }
+    if ($svc.Status -eq 'Running') { return $true }
+    try {
+        Start-Service vmcompute -ErrorAction Stop
+        return $true
+    } catch {
+        Write-Log "vmcompute service cannot start (reboot likely required): $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Test-Wsl2Ready {
+    # WSL2 is genuinely usable only when both signals hold.
+    if (-not (Test-WslKernelPresent)) { return $false }
+    if (-not (Test-VmComputeReady))  { return $false }
+    return $true
 }
 
 function Register-Phase2RunOnce {
@@ -186,15 +263,39 @@ function Invoke-Phase1 {
     }
     Write-Log "Virtualization OK"
 
-    # 3. WSL2 check
-    if (Test-Wsl2Ready) {
-        Write-Log "WSL2 already installed -> falling through to Phase 2 (no reboot)"
+    # 3. WSL2 readiness check — split into two signals so we can distinguish
+    #    (a) genuinely ready -> inline-run Phase 2
+    #    (b) kernel present but vmcompute not yet runnable (just installed,
+    #        not rebooted) -> register RunOnce + ask for reboot
+    #    (c) WSL not installed at all -> install + register RunOnce + reboot
+    $kernelPresent  = Test-WslKernelPresent
+    $vmComputeReady = if ($kernelPresent) { Test-VmComputeReady } else { $false }
+
+    if ($kernelPresent -and $vmComputeReady) {
+        Write-Log "WSL2 fully ready -> falling through to Phase 2 (no reboot)"
         Invoke-Phase2
         return
     }
 
+    if ($kernelPresent -and -not $vmComputeReady) {
+        # Common case after a manual `wsl --install` that hasn't been
+        # followed by a reboot yet. Skip re-installing WSL — just queue
+        # Phase 2 to run after the reboot completes.
+        Write-Log "WSL kernel present but vmcompute not ready -> reboot required to activate Hyper-V"
+        Register-Phase2RunOnce
+        Show-InfoDialog "Reboot required" `
+            ("WSL2 is installed but Windows must reboot before the " +
+             "Hyper-V Host Compute Service (vmcompute) can start.`n`n" +
+             "Until that happens, the sandbox VM cannot be created.`n`n" +
+             "Click OK, then save your work and reboot. Setup will " +
+             "resume automatically after you log back in.")
+        Write-Log "RunOnce registered; awaiting reboot."
+        exit 2
+    }
+
+    # Case (c): WSL not installed — install it, then ask for reboot.
     Write-Log "WSL2 not installed; attempting 'wsl --install --no-distribution'"
-    & wsl.exe --install --no-distribution 2>&1 | Tee-Object -FilePath $LogFile -Append | Out-Null
+    Invoke-NativeNoThrow { & wsl.exe --install --no-distribution 2>&1 | Tee-Object -FilePath $LogFile -Append | Out-Null }
     if ($LASTEXITCODE -ne 0) {
         Show-FatalDialog "WSL install failed" `
             ("Automatic WSL installation failed (exit $LASTEXITCODE).`n`n" +
@@ -210,15 +311,13 @@ function Invoke-Phase1 {
         exit 1
     }
 
-    # WSL kernel installed. We MUST reboot before `wsl --import` can run.
+    # WSL kernel installed. We MUST reboot before vmcompute can start.
     Register-Phase2RunOnce
-
     Show-InfoDialog "Reboot required" `
         ("WSL2 has been installed.`n`n" +
          "Windows must reboot to activate it. Setup will resume " +
          "automatically after you log back in.`n`n" +
          "Click OK, then save your work and reboot.")
-
     Write-Log "WSL installed; reboot required. RunOnce registered."
     exit 2
 }
@@ -244,7 +343,7 @@ function Update-WslConfig {
         Set-Content -Path $wslConfigPath -Value $wslConfigContent -Encoding UTF8
         Write-Log ".wslconfig updated"
         # Apply the new config so the next wsl invocation picks it up.
-        & wsl.exe --shutdown 2>&1 | Out-Null
+        Invoke-NativeNoThrow { & wsl.exe --shutdown 2>&1 | Out-Null }
     } else {
         Write-Log ".wslconfig already has vmIdleTimeout — leaving it alone"
     }
@@ -271,7 +370,7 @@ function Invoke-Phase2 {
     }
 
     # Set WSL default version (no-op if already 2).
-    & wsl.exe --set-default-version 2 2>&1 | Out-Null
+    Invoke-NativeNoThrow { & wsl.exe --set-default-version 2 2>&1 | Out-Null }
 
     # Validate that every payload file the installer was supposed to ship
     # is actually present. Missing here = installer was tampered with or
@@ -302,18 +401,37 @@ function Invoke-Phase2 {
     # Idempotent import: drop a previously imported distro first so retries
     # don't fail with "distro already exists" or carry over a half-baked
     # state from a previous failed provision.
-    $existing = (& wsl.exe --list --quiet 2>&1) -split "`r?`n" | ForEach-Object { $_.Trim() }
+    $existing = (Invoke-NativeNoThrow { & wsl.exe --list --quiet 2>&1 }) -split "`r?`n" | ForEach-Object { $_.Trim() }
     if ($existing -contains $DistroName) {
         Write-Log "Removing previous '$DistroName' distro..."
-        & wsl.exe --unregister $DistroName 2>&1 | Out-Null
+        Invoke-NativeNoThrow { & wsl.exe --unregister $DistroName 2>&1 | Out-Null }
     }
     if (-not (Test-Path $DistroDir)) {
         New-Item -ItemType Directory -Path $DistroDir -Force | Out-Null
     }
     Write-Log "Importing Ubuntu 24.04 base rootfs as '$DistroName'..."
-    & wsl.exe --import $DistroName $DistroDir $BaseTarball --version 2 2>&1 | Tee-Object -FilePath $LogFile -Append
-    if ($LASTEXITCODE -ne 0) {
-        Show-FatalDialog "WSL import failed" "wsl --import failed. See $LogFile for details."
+    # Capture wsl --import output so we can detect HCS_E_SERVICE_NOT_AVAILABLE
+    # — the canonical "WSL was installed but Windows hasn't rebooted yet"
+    # signal — and convert it into a graceful reboot prompt instead of a
+    # generic "import failed" dead-end.
+    $importOutput = Invoke-NativeNoThrow {
+        & wsl.exe --import $DistroName $DistroDir $BaseTarball --version 2 2>&1 | Tee-Object -FilePath $LogFile -Append
+    } | Out-String
+    $importExit = $LASTEXITCODE
+    if ($importExit -ne 0) {
+        if ($importOutput -match 'HCS_E_SERVICE_NOT_AVAILABLE|vmcompute') {
+            Write-Log "wsl --import returned HCS_E_SERVICE_NOT_AVAILABLE -> vmcompute not started, reboot required"
+            Register-Phase2RunOnce
+            Show-InfoDialog "Reboot required" `
+                ("WSL2 cannot create the sandbox VM because the Hyper-V " +
+                 "Host Compute Service (vmcompute) is not running.`n`n" +
+                 "This usually means Windows installed WSL but has not " +
+                 "rebooted yet to activate the hypervisor.`n`n" +
+                 "Click OK, then save your work and reboot. Setup will " +
+                 "resume automatically after you log back in.")
+            exit 2
+        }
+        Show-FatalDialog "WSL import failed" "wsl --import failed (exit $importExit). See $LogFile for details."
         Unregister-Phase2RunOnce
         exit 1
     }
@@ -358,7 +476,7 @@ function Invoke-Phase2 {
     #   pnpm install + rebuild + build:docker + ui:build (5-15 min)
     # All output is teed to the install log so the user has a trail.
     Write-Log "Running provision.sh inside distro (15-25 min, downloads packages + builds OpenClaw)..."
-    & wsl.exe -d $DistroName -u root -- /tmp/provision.sh 2>&1 | Tee-Object -FilePath $LogFile -Append
+    Invoke-NativeNoThrow { & wsl.exe -d $DistroName -u root -- /tmp/provision.sh 2>&1 | Tee-Object -FilePath $LogFile -Append }
     if ($LASTEXITCODE -ne 0) {
         Show-FatalDialog "Provisioning failed" `
             ("OpenClaw provisioning inside WSL failed (exit $LASTEXITCODE).`n`n" +
@@ -381,11 +499,11 @@ function Invoke-Phase2 {
     # systemd (wsl.conf is read at boot, not hot-reloaded). Terminate so
     # the next invocation cold-boots with systemd PID 1.
     Write-Log "Restarting distro to activate systemd + gateway service..."
-    & wsl.exe --terminate $DistroName 2>&1 | Out-Null
+    Invoke-NativeNoThrow { & wsl.exe --terminate $DistroName 2>&1 | Out-Null }
 
     # First "real" boot: systemd PID 1 starts openclaw-gateway.service via
     # its WantedBy=multi-user.target hook.
-    & wsl.exe -d $DistroName -u root -e /bin/true 2>&1 | Out-Null
+    Invoke-NativeNoThrow { & wsl.exe -d $DistroName -u root -e /bin/true 2>&1 | Out-Null }
     Start-Sleep -Seconds 5
 
     # Wait for the gateway HTTP endpoint to respond on Windows-side
