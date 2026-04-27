@@ -66,6 +66,26 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional options:"
 Name: "startmenuicon"; Description: "Create a Start Menu shortcut"; GroupDescription: "Additional options:"; Flags: checkedonce
+; --- Windows-integration toggle (sandbox break-out, OFF by default) ---
+;
+; UNCHECKED (default): the installed distro keeps wsl.conf as shipped,
+;   i.e. [automount] enabled=false + [interop] enabled=false +
+;   appendWindowsPath=false. The gateway cannot see /mnt/c/* and cannot
+;   spawn cmd.exe / powershell.exe / explorer.exe. This is the strict
+;   sandbox model documented in 2026-04-23-wsl-sandbox-design.md.
+;
+; CHECKED: post-install.ps1 sed-flips those three flags to "true" before
+;   provision.sh installs wsl.conf into /etc/wsl.conf. The gateway can
+;   then read any Windows file the user can read AND launch arbitrary
+;   Windows binaries -- enabling "set me an alarm", clipboard read/write,
+;   "open D:\foo in Explorer", Office-COM automation, etc. This is a
+;   deliberate weakening of threat-model items A.1 / A.2; the user opts
+;   in via this checkbox after reading the description.
+;
+; checkedonce is intentionally NOT used: an upgrade should re-prompt
+; the user, not silently re-apply a possibly stale choice from months
+; ago.
+Name: "windowsbridge"; Description: "Allow OpenClaw to access Windows files and run Windows commands (needed for: alarms, clipboard, opening folders, Office automation). Leave unchecked for strict sandbox."; GroupDescription: "Windows integration:"; Flags: unchecked
 
 [Files]
 ; Canonical Ubuntu 24.04 WSL base rootfs (cached/downloaded by scripts/build-installer.ps1).
@@ -215,6 +235,22 @@ end;
 procedure ProviderComboChange(Sender: TObject);
 begin
   ModelEdit.Text := GetProviderDefaultModel(ProviderCombo.ItemIndex);
+end;
+
+{ --- Windows-integration mode helper -----------------------------------
+  Returns '1' when the user checked the windowsbridge task, '0'
+  otherwise. Read by WriteInstallOptions and persisted into
+  install-options.ini's [mode] permissive=. post-install.ps1 Phase 2
+  consumes the flag and (if 1) sed-flips wsl.conf [automount]/[interop]
+  to enabled=true before staging it into the distro at /etc/wsl.conf.
+  See the [Tasks] section header for the full security trade-off. }
+
+function GetWindowsBridgeFlag: String;
+begin
+  if WizardIsTaskSelected('windowsbridge') then
+    Result := '1'
+  else
+    Result := '0';
 end;
 
 { --- Wizard initialisation: insert CloudPage after wpSelectTasks --- }
@@ -406,12 +442,15 @@ begin
     'baseUrl=' + BaseUrl + #13#10 +
     'api=' + Api + #13#10 +
     'model=' + Model + #13#10 +
-    'apiKey=' + ApiKey + #13#10;
+    'apiKey=' + ApiKey + #13#10 +
+    '[mode]' + #13#10 +
+    'permissive=' + GetWindowsBridgeFlag + #13#10;
 
   SaveStringToFile(OptionsFile, Content, False);
   Log('Wrote install-options.ini (desktop=' + DesktopFlag +
       ', startMenu=' + StartMenuFlag +
       ', provider=' + ProviderId +
+      ', permissive=' + GetWindowsBridgeFlag +
       ', apiKey=' + IntToStr(Length(ApiKey)) + ' chars)');
 end;
 

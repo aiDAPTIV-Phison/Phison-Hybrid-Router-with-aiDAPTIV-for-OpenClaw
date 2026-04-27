@@ -387,6 +387,10 @@ function Read-InstallOptions {
     #   [install]    : appName / appDir / launcherPath / iconPath / startMenuGroup / userDesktop
     #   [shortcuts]  : desktop=0|1, startMenu=0|1
     #   [provider]   : id, baseUrl, api, model, apiKey
+    #   [mode]       : permissive=0|1  (windowsbridge task selection;
+    #                  1 = sed-flip wsl.conf [automount]/[interop] to
+    #                  enabled=true so the gateway can see /mnt/c and
+    #                  spawn cmd.exe -- documented sandbox break-out)
     $iniPath = Join-Path $AppDir "install-options.ini"
     $opts = @{
         AppName         = "aiDAPTIVClaw"
@@ -402,6 +406,11 @@ function Read-InstallOptions {
         ProviderApi     = ''
         ProviderModel   = ''
         ProviderApiKey  = ''
+        # Default: strict sandbox (no /mnt/c, no cmd.exe). Matches the
+        # `Flags: unchecked` default of the windowsbridge installer task,
+        # so a user running post-install.ps1 by hand without an
+        # install-options.ini gets the safe behaviour.
+        Permissive      = $false
     }
     if (-not (Test-Path $iniPath)) {
         Write-Log "install-options.ini not found at $iniPath -- using defaults (both shortcuts, no cloud key)"
@@ -428,10 +437,12 @@ function Read-InstallOptions {
             'api'            { $opts.ProviderApi     = $v }
             'model'          { $opts.ProviderModel   = $v }
             'apiKey'         { $opts.ProviderApiKey  = $v }
+            'permissive'     { $opts.Permissive      = ($v -eq '1') }
         }
     }
     $keyChars = $opts.ProviderApiKey.Length
     Write-Log ("Loaded install-options.ini (desktop=$($opts.Desktop), startMenu=$($opts.StartMenu), " +
+               "permissive=$($opts.Permissive), " +
                "provider='$($opts.ProviderId)', model='$($opts.ProviderModel)', apiKey=$keyChars chars)")
     return $opts
 }
@@ -935,6 +946,32 @@ function Invoke-Phase2 {
     }
     Write-Log "Payload OK (base $([math]::Round((Get-Item $BaseTarball).Length / 1MB,1)) MB, source $([math]::Round((Get-Item $SourceTarball).Length / 1MB,1)) MB)"
 
+    # Load wizard choices ONCE up front. We need .Permissive before we
+    # stage wsl.conf into the distro (sed-flip happens between cp and
+    # provision.sh), and Apply-CloudProviderConfig later in this function
+    # consumes the same object. Loading it here also lets us echo the
+    # selected sandbox mode in the user-visible banner above so the user
+    # sees right away whether they opted into the Windows bridge.
+    $installOpts = Read-InstallOptions
+    if ($installOpts.Permissive) {
+        Write-Host ""
+        Write-Host "  Sandbox mode: PERMISSIVE (Windows bridge enabled)" -ForegroundColor Yellow
+        Write-Host "    The gateway will be able to read Windows files (D:\, Documents,"
+        Write-Host "    Downloads, ~/.ssh, browser cookies, ...) and run cmd.exe /"
+        Write-Host "    powershell.exe / explorer.exe. Required for: alarms, clipboard,"
+        Write-Host "    'open this folder', Office automation. To switch back to strict"
+        Write-Host "    sandbox, reinstall with the 'Windows integration' checkbox OFF."
+        Write-Host ""
+    } else {
+        Write-Host ""
+        Write-Host "  Sandbox mode: STRICT SANDBOX (Windows bridge disabled)" -ForegroundColor Green
+        Write-Host "    The gateway cannot see /mnt/c and cannot run Windows .exe."
+        Write-Host "    Features that need host OS automation (alarms, clipboard, file"
+        Write-Host "    save to Desktop, ...) will be unavailable. To enable them,"
+        Write-Host "    reinstall with the 'Windows integration' checkbox ON."
+        Write-Host ""
+    }
+
     # Apply .wslconfig BEFORE provisioning so:
     #   - vmIdleTimeout=-1 protects the 15-25 minute build from being killed
     #     by the WSL2 idle timeout.
@@ -1006,6 +1043,75 @@ function Invoke-Phase2 {
 
     & wsl.exe -d $DistroName -u root -- cp $wslConfP /tmp/rootfs-config/wsl.conf
     if ($LASTEXITCODE -ne 0) { Show-FatalDialog "Distro staging failed" "cp wsl.conf failed."; Unregister-Phase2RunOnce; exit 1 }
+
+    # ----------------------------------------------------------------
+    # Apply windowsbridge mode to the staged wsl.conf BEFORE provision.sh
+    # copies it to /etc/wsl.conf (provision.sh step 6).
+    #
+    # Strict sandbox (default, Permissive=$false): leave the file as
+    # shipped -- [automount] enabled=false, [interop] enabled=false,
+    # appendWindowsPath=false. We still prepend a `# MODE:` header so
+    # `head -1 /etc/wsl.conf` inside the distro reports the mode the
+    # installer landed in (useful for support).
+    #
+    # Permissive (Permissive=$true, user checked the windowsbridge task):
+    # sed-flip the three `enabled=false` / `appendWindowsPath=false`
+    # lines to `=true`. This re-enables the gateway's view of /mnt/c
+    # AND the ability to spawn cmd.exe / powershell.exe / explorer.exe.
+    # See [Tasks] in openclaw.iss for the full security trade-off.
+    #
+    # We MUST do this on the staged copy, not the on-disk template under
+    # $AppDir\rootfs\wsl.conf -- modifying $AppDir would (a) confuse a
+    # subsequent /repair re-run that re-reads the original, and (b)
+    # mutate Program Files content which we don't own at runtime.
+    # ----------------------------------------------------------------
+    # CRITICAL: the heredoc bodies below MUST be passed to bash as LF-only
+    # text. PowerShell `@'...'@` here-strings preserve the source file's
+    # line endings; this script ships as CRLF (.gitattributes:
+    # *.ps1 text eol=crlf), so a naive `bash -c $modeScript` feeds bash
+    # `set -e\r\nsed ... /tmp/rootfs-config/wsl.conf\r\n...`. bash
+    # treats the trailing \r as part of the previous token, so:
+    #   * `set -e\r` -> "set: -: invalid option" (\r is non-flag char)
+    #   * `... wsl.conf\r` -> sed tries to open a file literally named
+    #     "wsl.conf\r" and reports "No such file or directory"
+    # which manifested as "Failed to apply PERMISSIVE mode to wsl.conf
+    # (sed exit 2)" in the field. The `-replace "`r`n", "`n"` below
+    # converts CRLF -> LF immediately after the heredoc closes, before
+    # the string ever leaves PowerShell. Do NOT remove it. Do NOT add
+    # any new heredoc that talks to bash without applying the same
+    # replace.
+    if ($installOpts.Permissive) {
+        Write-Log "Windows-integration: PERMISSIVE -- flipping staged wsl.conf [automount]/[interop] to enabled=true"
+        # Single bash invocation: sed flips all three flags, then
+        # prepends the MODE marker. We stick to BRE so the `^` anchor
+        # and literal `=` work without escaping. The order matters:
+        # prepend AFTER the substitutions so the marker line itself is
+        # not eligible to match `^enabled=false`.
+        $modeScript = (@'
+set -e
+sed -i -e 's/^enabled=false$/enabled=true/' -e 's/^appendWindowsPath=false$/appendWindowsPath=true/' /tmp/rootfs-config/wsl.conf
+sed -i '1i# MODE: PERMISSIVE (windowsbridge=1 at install time -- gateway sees /mnt/c and can spawn cmd.exe)' /tmp/rootfs-config/wsl.conf
+'@) -replace "`r`n", "`n"
+        Invoke-NativeNoThrow {
+            & wsl.exe -d $DistroName -u root -- bash -c $modeScript 2>&1 | Tee-Object -FilePath $LogFile -Append | Out-Null
+        }
+        if ($LASTEXITCODE -ne 0) {
+            Show-FatalDialog "Distro staging failed" "Failed to apply PERMISSIVE mode to wsl.conf (sed exit $LASTEXITCODE)."
+            Unregister-Phase2RunOnce; exit 1
+        }
+    } else {
+        Write-Log "Windows-integration: STRICT SANDBOX -- staged wsl.conf left unchanged (automount=false, interop=false)"
+        $modeScript = (@'
+set -e
+sed -i '1i# MODE: STRICT SANDBOX (windowsbridge=0 at install time -- no /mnt/c, no cmd.exe)' /tmp/rootfs-config/wsl.conf
+'@) -replace "`r`n", "`n"
+        Invoke-NativeNoThrow {
+            & wsl.exe -d $DistroName -u root -- bash -c $modeScript 2>&1 | Tee-Object -FilePath $LogFile -Append | Out-Null
+        }
+        # Marker prepend is informational only; if it fails we still
+        # ship the strict-sandbox config (the actual safe defaults are
+        # baked into the source wsl.conf itself).
+    }
     & wsl.exe -d $DistroName -u root -- cp $svcP /tmp/rootfs-config/openclaw-gateway.service
     if ($LASTEXITCODE -ne 0) { Show-FatalDialog "Distro staging failed" "cp openclaw-gateway.service failed."; Unregister-Phase2RunOnce; exit 1 }
     & wsl.exe -d $DistroName -u root -- cp $provP /tmp/provision.sh
@@ -1058,7 +1164,8 @@ function Invoke-Phase2 {
     # the file is already in place — the gateway reads the config at
     # service startup, not on demand. Then strip the apiKey from
     # install-options.ini so it does not sit in plain text in {app}\.
-    $installOpts = Read-InstallOptions
+    # $installOpts was loaded earlier (top of Phase 2) so the same
+    # object drives both the wsl.conf mode flip and the cloud config.
     Apply-CloudProviderConfig -Distro $DistroName -Options $installOpts
     Remove-InstallOptionsSecrets
 

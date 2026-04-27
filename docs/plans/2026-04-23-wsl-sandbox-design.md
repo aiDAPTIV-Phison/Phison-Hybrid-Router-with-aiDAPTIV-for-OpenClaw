@@ -49,6 +49,46 @@
 >
 > Affected files: `installer/rootfs/provision.sh` (no `enable`, ships `run-gateway.sh`), `installer/openclaw-launcher.cmd` (full rewrite), `installer/post-install.ps1` (Phase 2 ends after marker write), `installer/openclaw.iss` (no longer ships keep-alive helper). The hardening section below (Step 2: openclaw-gateway.service) and Section 9 (Hardening troubleshooting) still describe the unit's contents accurately — the unit file is unchanged, only its enabled state is.
 
+> **🔄 REVISION 2026-04-27 — install-time `windowsbridge` checkbox (Q3 made user-selectable)**
+>
+> The original Q3=D decision (`/etc/wsl.conf` `[automount] enabled=false` + `[interop] enabled=false`) cleanly prevented the gateway from reading any Windows file or executing any Windows .exe. In 2026-04-27 dogfooding it became clear that this also blocks an entire class of high-frequency real-user requests:
+>
+> - "set me a 7am alarm" → no `schtasks.exe` reachable
+> - "copy this snippet to my clipboard" → no Windows clipboard bridge
+> - "open `D:\projects\foo` in Explorer" → no `explorer.exe`
+> - "save this markdown to my Desktop" → no `/mnt/c`
+> - Any Office automation via COM, any "create a Windows shortcut", any "play this in Windows Media Player", etc.
+>
+> **Resolution: opt-in checkbox at install time.** A new Inno Setup task `windowsbridge` (default UNCHECKED) is added to `installer/wsl/openclaw.iss`. The task description explicitly enumerates both what is gained ("alarms, clipboard, opening folders, Office automation") and what is lost ("strict sandbox"). Selection state propagates through `install-options.ini` `[mode] permissive=0|1` to `post-install.ps1` Phase 2, which sed-flips the staged `wsl.conf` between `enabled=false` and `enabled=true` BEFORE provision.sh installs it at `/etc/wsl.conf`. The on-disk `installer/wsl/rootfs/wsl.conf` is never modified — staging happens on a copy in `/tmp/rootfs-config/` inside the distro.
+>
+> **What the user actually sees:**
+>
+> - **Installer page:** "Windows integration" group with one checkbox: "Allow OpenClaw to access Windows files and run Windows commands (needed for: alarms, clipboard, opening folders, Office automation). Leave unchecked for strict sandbox." Default: unchecked.
+> - **`post-install.ps1` Phase 2 banner:** echoes either `Sandbox mode: STRICT SANDBOX (Windows bridge disabled)` or `Sandbox mode: PERMISSIVE (Windows bridge enabled)` to the visible PowerShell window so users know what they're getting.
+> - **Every gateway launch:** `run-gateway.sh` reads `/etc/wsl.conf` line 1 (which `post-install.ps1` prepended with `# MODE: STRICT SANDBOX (...)` or `# MODE: PERMISSIVE (...)`) and prints it as a banner before `exec node`. So even months later the user can glance at the gateway terminal and see which mode they're in.
+> - **Self-report from outside:** `wsl -d aidaptivclaw -- head -1 /etc/wsl.conf` returns the same `# MODE: ...` line. Useful for support diagnostics.
+>
+> **Threat-model impact when the user opts INTO permissive mode:**
+>
+> - **A.1 (LLM reads arbitrary Windows files):** No longer mitigated. The gateway can read `~/Documents`, `~/Downloads`, browser cookie databases on disk, `~/.ssh/`, anything the user can read.
+> - **A.2 (LLM executes arbitrary Windows .exe):** No longer mitigated. The gateway can spawn `cmd.exe`, `powershell.exe`, `explorer.exe`, `schtasks.exe`, `wmic.exe`, etc., with the user's token.
+> - **What still holds in permissive mode:**
+>   - Non-root `openclaw` user (uid 1000, locked password, no sudo) — gateway cannot become root inside the distro.
+>   - `/opt/openclaw` and `/opt/node` are root-owned read-only — gateway cannot backdoor its own binaries to persist.
+>   - Gateway bound to `127.0.0.1:18789` only — no LAN exposure, regardless of interop.
+>   - WSL distro itself is per-Windows-user, so cross-Windows-user host attacks still need a separate vector.
+>
+> **Why a checkbox and not a runtime toggle?** Switching `wsl.conf` flags requires a `wsl --terminate` to take effect, which would kill any running gateway session. Doing it at install time keeps the runtime experience clean ("you click the icon, the gateway runs"). Users who change their mind can re-run the installer; the task is **not** marked `checkedonce`, so the box is re-asked on every reinstall and never silently stale.
+>
+> **Migration target (still planned, not in this revision):** Ship a Windows-side broker (`installer/native/broker.exe` or similar) that exposes a narrow whitelist API on a loopback port — `POST /broker/alarm`, `GET/PUT /broker/clipboard`, `POST /broker/explorer`, `POST /broker/save-to-desktop` — then make the broker the recommended way to satisfy these use cases and recommend that strict-sandbox users leave `windowsbridge` unchecked. Until that broker exists, **users who need any of the listed features must check the box and accept that they have effectively opted out of A.1 / A.2 mitigation.**
+>
+> **Affected files:**
+>
+> - `installer/wsl/openclaw.iss` — new `[Tasks] windowsbridge`, new `GetWindowsBridgeFlag` helper, `WriteInstallOptions` writes `[mode] permissive=0|1`.
+> - `installer/wsl/post-install.ps1` — `Read-InstallOptions` parses `permissive`; `Invoke-Phase2` echoes the active mode in its banner and sed-flips the staged `wsl.conf` between strict and permissive (and prepends a `# MODE: ...` marker line either way).
+> - `installer/wsl/rootfs/wsl.conf` — header rewritten to document the two modes; defaults remain strict.
+> - `installer/wsl/rootfs/provision.sh` — comment in step 4 (user creation) updated so it doesn't claim wsl.conf is unconditionally strict; comment in step 6 (wsl-pro masking) updated so it doesn't depend on automount being off; `run-gateway.sh` now echoes the `# MODE: ...` banner from `/etc/wsl.conf` at every launch.
+
 **Goal:** Convert aiDAPTIVClaw from a native Windows installation (full user privileges) into a WSL2-confined installation (non-root user inside an isolated Ubuntu 24.04 distro with systemd hardening), so OpenClaw can no longer read arbitrary Windows files or escalate privileges if compromised.
 
 **Architecture (Q2=C, online build):** Installer ships a vanilla Ubuntu 24.04 WSL base rootfs + an `openclaw-source.tar.gz` produced by `git archive HEAD` + `provision.sh` + `wsl.conf` + `openclaw-gateway.service`. On install, `wsl --import` registers the base rootfs as the private distro `aidaptivclaw`, then `provision.sh` runs **inside the customer's distro** to install Node.js + pnpm + build OpenClaw under `/opt/openclaw` and enable the systemd unit. Subsequent boots: the systemd unit (`openclaw-gateway.service`) starts the gateway as the non-root `openclaw` user with hardening directives confining writes to `/home/openclaw/{workspace,.openclaw}` and `/tmp`. The Windows launcher only triggers `wsl.exe -d aidaptivclaw` and opens the browser at `http://localhost:18789` (reachable via WSL2 default localhost forwarding).

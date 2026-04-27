@@ -76,8 +76,11 @@ ln -sf /opt/pnpm/pnpm /usr/local/bin/pnpm
 #    spawn /bin/bash via child_process.spawn -- the user's *login*
 #    shell setting does not gate that. Real isolation is provided by:
 #      * no sudo / no password / not in any privileged group
-#      * wsl.conf disables [automount] and [interop] (no /mnt/c, no
-#        cmd.exe)
+#      * wsl.conf controls [automount] / [interop]; the windowsbridge
+#        installer task decides whether the gateway sees /mnt/c and
+#        cmd.exe (post-install.ps1 reports the active mode and head -1
+#        /etc/wsl.conf shows it on a running distro). The other
+#        defenses on this list still hold in either mode.
 #      * /opt/openclaw and /opt/node are root-owned read-only (locked
 #        in step 6 below)
 #      * gateway binds 127.0.0.1 only
@@ -177,6 +180,16 @@ cat > /opt/openclaw/run-gateway.sh <<'GATEWAY_EOF'
 set -e
 echo "[aiDAPTIVClaw] Starting OpenClaw gateway on http://localhost:18789/"
 echo "[aiDAPTIVClaw] Press Ctrl-C in this window to stop."
+# Echo the active sandbox mode so users see at every launch whether the
+# Windows bridge is open. The first line of /etc/wsl.conf was prepended
+# by post-install.ps1 with `# MODE: STRICT SANDBOX (...)` or
+# `# MODE: PERMISSIVE (...)`. We grep that out and print it as a
+# one-line banner; if the marker is missing (e.g. distro provisioned
+# by an older installer), we just stay silent rather than guess.
+mode_line=$(head -1 /etc/wsl.conf 2>/dev/null || true)
+case "${mode_line}" in
+    "# MODE: "*) echo "[aiDAPTIVClaw] ${mode_line#'# '}" ;;
+esac
 echo ""
 cd "${HOME}"
 # `--force` makes the gateway take over port 18789 if a stale listener
@@ -222,13 +235,19 @@ chmod -R a-w,a+rX /opt/openclaw /opt/node
 
 # Mask Ubuntu Pro's WSL-side bridge. It is preinstalled on the Ubuntu
 # 24.04 cloud rootfs and tries to talk to a Windows-side companion via
-# /mnt/c/Windows/system32/cmd.exe. Our wsl.conf disables automount of
-# Windows drives (sandbox isolation, Q3 = D in the design), so the
-# bridge can never find cmd.exe and fails on every start. Without
-# masking it spams the journal at ~2-second intervals (restart counter
-# climbs into the hundreds within minutes) which buries our own logs.
-# The bridge is irrelevant to OpenClaw, so masking is a clean no-op
-# for functionality and a big win for log hygiene.
+# cmd.exe. Two cases:
+#   - STRICT SANDBOX mode (windowsbridge unchecked): wsl.conf disables
+#     automount, so the bridge cannot find cmd.exe and fails on every
+#     start, spamming the journal at ~2-second intervals (restart
+#     counter climbs into the hundreds within minutes) which buries
+#     our own logs.
+#   - PERMISSIVE mode (windowsbridge checked): the bridge could find
+#     cmd.exe, but it expects a paid Ubuntu Pro subscription on the
+#     Windows side; without one it still fails (just for a different
+#     reason) and still spams the journal.
+# Either way the bridge is irrelevant to OpenClaw, so masking it is a
+# clean no-op for functionality and a big win for log hygiene
+# regardless of which sandbox mode is active.
 systemctl mask wsl-pro.service || true
 
 # 7. Pre-create writable allowlist directories. Even though the
