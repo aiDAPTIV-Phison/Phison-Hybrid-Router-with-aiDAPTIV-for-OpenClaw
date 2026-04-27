@@ -31,18 +31,27 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 
-# (path-glob, target-eol). Globs are evaluated relative to repoRoot.
+# (path-glob, target-eol, recurse). Globs are evaluated relative to repoRoot.
+# We use Recurse=true for the installer paths because the 2026-04-27 split
+# put files under installer/native/, installer/shared/, installer/wsl/, and
+# installer/wsl/rootfs/. The previous flat layout (installer/*.cmd etc.) is
+# still picked up by the same recursive sweep.
 $rules = @(
-    @{ Path = 'installer'; Filter = '*.cmd';     Eol = 'CRLF' }
-    @{ Path = 'installer'; Filter = '*.bat';     Eol = 'CRLF' }
-    @{ Path = 'installer'; Filter = '*.ps1';     Eol = 'CRLF' }
-    @{ Path = 'installer'; Filter = '*.vbs';     Eol = 'CRLF' }
-    @{ Path = 'installer'; Filter = '*.iss';     Eol = 'CRLF' }
-    @{ Path = 'installer'; Filter = '*.reg';     Eol = 'CRLF' }
-    @{ Path = 'installer\rootfs'; Filter = '*.sh';      Eol = 'LF' }
-    @{ Path = 'installer\rootfs'; Filter = '*.service'; Eol = 'LF' }
-    @{ Path = 'installer\rootfs'; Filter = '*.conf';    Eol = 'LF' }
-    @{ Path = 'scripts';   Filter = '*.ps1';     Eol = 'CRLF' }
+    @{ Path = 'installer'; Filter = '*.cmd';     Eol = 'CRLF'; Recurse = $true }
+    @{ Path = 'installer'; Filter = '*.bat';     Eol = 'CRLF'; Recurse = $true }
+    @{ Path = 'installer'; Filter = '*.ps1';     Eol = 'CRLF'; Recurse = $true }
+    @{ Path = 'installer'; Filter = '*.vbs';     Eol = 'CRLF'; Recurse = $true }
+    @{ Path = 'installer'; Filter = '*.iss';     Eol = 'CRLF'; Recurse = $true }
+    @{ Path = 'installer'; Filter = '*.reg';     Eol = 'CRLF'; Recurse = $true }
+    # Linux-side artifacts inside the WSL rootfs (and the legacy top-level
+    # rootfs path, kept for any leftover checkouts during the transition).
+    @{ Path = 'installer\rootfs';     Filter = '*.sh';      Eol = 'LF'; Recurse = $true }
+    @{ Path = 'installer\rootfs';     Filter = '*.service'; Eol = 'LF'; Recurse = $true }
+    @{ Path = 'installer\rootfs';     Filter = '*.conf';    Eol = 'LF'; Recurse = $true }
+    @{ Path = 'installer\wsl\rootfs'; Filter = '*.sh';      Eol = 'LF'; Recurse = $true }
+    @{ Path = 'installer\wsl\rootfs'; Filter = '*.service'; Eol = 'LF'; Recurse = $true }
+    @{ Path = 'installer\wsl\rootfs'; Filter = '*.conf';    Eol = 'LF'; Recurse = $true }
+    @{ Path = 'scripts';   Filter = '*.ps1';     Eol = 'CRLF'; Recurse = $false }
 )
 
 function Convert-LineEndings {
@@ -93,7 +102,9 @@ $ok = 0
 foreach ($rule in $rules) {
     $dir = Join-Path $repoRoot $rule.Path
     if (-not (Test-Path $dir)) { continue }
-    Get-ChildItem -Path $dir -Filter $rule.Filter -File -ErrorAction SilentlyContinue | ForEach-Object {
+    $gciArgs = @{ Path = $dir; Filter = $rule.Filter; File = $true; ErrorAction = 'SilentlyContinue' }
+    if ($rule.Recurse) { $gciArgs['Recurse'] = $true }
+    Get-ChildItem @gciArgs | ForEach-Object {
         $rel = $_.FullName.Substring($repoRoot.Length + 1)
         $r = Convert-LineEndings -FullPath $_.FullName -Eol $rule.Eol
         if ($r.Changed) {

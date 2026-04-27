@@ -121,14 +121,19 @@ dist/protocol.schema.json
 **/.settings/
 **/.gradle/
 
-# Installer build artifacts
+# Installer build artifacts (both native and WSL flavors)
 installer/build/
+installer/native/build/
 installer/output/
 installer/.node-cache/
-# WSL rootfs build artifacts (see scripts/build-rootfs.ps1)
+# WSL rootfs build artifacts (downloaded base + git-archive source).
+# Old path kept for repos still using pre-2026-04-27 layout.
 installer/rootfs/.cache/
 installer/rootfs/*.tar
 installer/rootfs/*.tar.gz
+installer/wsl/rootfs/.cache/
+installer/wsl/rootfs/*.tar
+installer/wsl/rootfs/*.tar.gz
 
 # Synthing
 **/.stfolder/

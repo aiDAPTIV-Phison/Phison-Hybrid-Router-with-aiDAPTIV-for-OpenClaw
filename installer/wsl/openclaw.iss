@@ -12,7 +12,18 @@
 ; packages, install Node.js, build OpenClaw, and enable the systemd unit.
 ; Provision time on the customer machine: ~15-30 min, requires internet.
 ;
-; Build with: iscc.exe /DAppVersion=x.x.x openclaw.iss
+; Build with:
+;   pwsh scripts\build-installer.ps1 -Variant wsl
+;   (or directly: iscc.exe /DAppVersion=x.x.x installer\wsl\openclaw.iss)
+;
+; Coexists with the "native" flavor (installer/native/openclaw.iss) on the
+; same machine -- the two installers carry different AppId GUIDs so Windows
+; treats them as independent products.
+;
+; Layout assumptions (paths relative to this .iss file):
+;   ..\shared\         -- icons / license / pre-install note / launcher.vbs
+;   rootfs\            -- ubuntu-base.tar.gz, openclaw-source.tar.gz, configs
+;   ..\output\         -- compiled .exe lands here (shared with native flavor)
 ;
 ; Design plan: docs/plans/2026-04-23-wsl-sandbox-design.md
 
@@ -21,30 +32,33 @@
 #endif
 
 [Setup]
-AppId={{E8A3F2B1-7C4D-4E5F-9A1B-2D3C4E5F6A7B}
-AppName=aiDAPTIVClaw
+; Distinct AppId from the native flavor -- this lets the WSL build install
+; in parallel without Windows treating it as an upgrade of the native one
+; (which would clobber the native uninstall entry). Generated 2026-04-27.
+AppId={{20CB01AE-608C-42D4-AEC4-2951D158C19E}
+AppName=aiDAPTIVClaw (WSL)
 AppVersion={#AppVersion}
-AppVerName=aiDAPTIVClaw {#AppVersion}
+AppVerName=aiDAPTIVClaw (WSL) {#AppVersion}
 AppPublisher=aiDAPTIV
 AppPublisherURL=https://github.com/openclaw/openclaw
 AppSupportURL=https://github.com/openclaw/openclaw/issues
 DefaultDirName={commonpf}\aiDAPTIVClaw
 DefaultGroupName=aiDAPTIVClaw
-OutputDir=output
-OutputBaseFilename=aidaptiv-claw-setup-{#AppVersion}
+OutputDir=..\output
+OutputBaseFilename=aidaptiv-claw-setup-wsl-{#AppVersion}
 Compression=lzma2/ultra64
 SolidCompression=yes
 ; Admin required: wsl --install and wsl --import need elevation,
 ; and we write to ProgramData and Program Files.
 PrivilegesRequired=admin
-SetupIconFile=Gemini_Generated_Image_aiDAPTIV.ico
+SetupIconFile=..\shared\Gemini_Generated_Image_aiDAPTIV.ico
 UninstallDisplayIcon={app}\Gemini_Generated_Image_aiDAPTIV.ico
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-LicenseFile=license.txt
+LicenseFile=..\shared\license.txt
 DisableProgramGroupPage=yes
-InfoBeforeFile=pre-install-note.txt
+InfoBeforeFile=..\shared\pre-install-note.txt
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -80,7 +94,7 @@ Source: "post-install.ps1"; DestDir: "{app}"; Flags: ignoreversion
 ; idle-shuts-down a distro when it has zero attached wsl.exe sessions,
 ; and the launcher's wt.exe tab counts as one for as long as the user
 ; keeps it open. See docs/plans/2026-04-23-wsl-sandbox-design.md.
-Source: "openclaw-launcher.vbs"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\shared\openclaw-launcher.vbs"; DestDir: "{app}"; Flags: ignoreversion
 Source: "openclaw-launcher.cmd"; DestDir: "{app}"; Flags: ignoreversion
 ; openclaw.json template — patched by post-install.ps1 Phase 2 with the
 ; user's cloud-provider choice (collected on the wizard's CloudPage and
@@ -88,7 +102,7 @@ Source: "openclaw-launcher.cmd"; DestDir: "{app}"; Flags: ignoreversion
 ; %USERPROFILE%\.openclaw\openclaw.json and /home/openclaw/.openclaw/
 ; openclaw.json inside the WSL distro.
 Source: "openclaw-template.json"; DestDir: "{app}"; Flags: ignoreversion
-Source: "Gemini_Generated_Image_aiDAPTIV.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\shared\Gemini_Generated_Image_aiDAPTIV.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 ; The launcher shortcuts (desktop + Start Menu group) are NOT created

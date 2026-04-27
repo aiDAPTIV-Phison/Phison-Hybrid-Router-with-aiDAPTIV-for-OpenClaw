@@ -1,15 +1,18 @@
 <#
 .SYNOPSIS
-    Build the aiDAPTIVClaw Windows installer (.exe) using Inno Setup.
+    Build the WSL-flavor aiDAPTIVClaw Windows installer (.exe) using
+    Inno Setup. Coexists with the native flavor (build-installer-native.ps1);
+    both are reachable through the dispatcher scripts/build-installer.ps1.
 
 .DESCRIPTION
     Pipeline (WSL2 sandbox, online build flavor — Q2=C):
       1. Validate Inno Setup Compiler is installed.
       2. Cache Canonical's vanilla Ubuntu 24.04 WSL base rootfs at
-         installer/rootfs/ubuntu-base.tar.gz (~340 MB, downloaded once).
+         installer/wsl/rootfs/ubuntu-base.tar.gz (~340 MB, downloaded once).
       3. Pack git-tracked source via `git archive --format=tar.gz HEAD`
-         into installer/rootfs/openclaw-source.tar.gz.
-      4. Run Inno Setup Compiler against installer/openclaw.iss.
+         into installer/wsl/rootfs/openclaw-source.tar.gz.
+      4. Run Inno Setup Compiler against installer/wsl/openclaw.iss.
+      5. Final .exe lands in installer/output/aidaptiv-claw-setup-wsl-<ver>.exe
 
     The build machine does NOT need WSL2, VT-x, or Docker. The customer
     machine downloads packages and builds OpenClaw at install time
@@ -27,9 +30,10 @@
     needed; Canonical updates the base only on Ubuntu point releases.
 
 .EXAMPLE
-    .\scripts\build-installer.ps1
-    .\scripts\build-installer.ps1 -AppVersion 1.0.0
-    .\scripts\build-installer.ps1 -ForceRefreshSource
+    pwsh scripts\build-installer.ps1 -Variant wsl
+    pwsh scripts\build-installer-wsl.ps1
+    pwsh scripts\build-installer-wsl.ps1 -AppVersion 1.0.0
+    pwsh scripts\build-installer-wsl.ps1 -ForceRefreshSource
 #>
 param(
     [string]$AppVersion = "",
@@ -40,11 +44,16 @@ param(
 $ErrorActionPreference = "Stop"
 $RepoRoot      = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $InstallerDir  = Join-Path $RepoRoot "installer"
-$RootfsDir     = Join-Path $InstallerDir "rootfs"
+$WslDir        = Join-Path $InstallerDir "wsl"
+# rootfs sits under installer/wsl/ so the WSL flavor's openclaw.iss
+# Source: "rootfs\..." lines resolve relative to the .iss file. Output
+# stays under installer/output (shared with the native flavor;
+# OutputBaseFilename keeps the two .exe files apart).
+$RootfsDir     = Join-Path $WslDir "rootfs"
 $BaseTarball   = Join-Path $RootfsDir "ubuntu-base.tar.gz"
 $SourceTarball = Join-Path $RootfsDir "openclaw-source.tar.gz"
 $OutputDir     = Join-Path $InstallerDir "output"
-$IssFile       = Join-Path $InstallerDir "openclaw.iss"
+$IssFile       = Join-Path $WslDir "openclaw.iss"
 
 # Canonical's official Ubuntu 24.04 WSL base rootfs. Same image MS Store
 # ships but with a stable URL suitable for unattended download.
@@ -64,7 +73,7 @@ if (-not $AppVersion) {
 
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "  aiDAPTIVClaw Installer Builder"           -ForegroundColor Cyan
+Write-Host "  aiDAPTIVClaw Installer Builder (WSL)"     -ForegroundColor Cyan
 Write-Host "  Version: $AppVersion"                      -ForegroundColor Cyan
 Write-Host "  Mode: WSL2 sandbox (online build, Q2=C)"  -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
@@ -185,7 +194,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # --- Done ---
-$OutputExe = Join-Path $OutputDir "aidaptiv-claw-setup-$AppVersion.exe"
+$OutputExe = Join-Path $OutputDir "aidaptiv-claw-setup-wsl-$AppVersion.exe"
 $OutputSize = if (Test-Path $OutputExe) { [math]::Round((Get-Item $OutputExe).Length / 1MB, 1) } else { "?" }
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Green

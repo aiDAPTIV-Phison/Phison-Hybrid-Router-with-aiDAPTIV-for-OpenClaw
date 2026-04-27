@@ -27,5 +27,6 @@ src/gateway/server-methods/CLAUDE.md -text
 # WSL/Linux artifacts must stay LF -- bash, systemd unit parser, and
 # /etc/wsl.conf all reject CRLF (`bad interpreter: \r`, etc.).
 installer/rootfs/**           text eol=lf
+installer/wsl/rootfs/**       text eol=lf
 *.sh                          text eol=lf
 *.service                     text eol=lf
