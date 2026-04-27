@@ -57,14 +57,37 @@ chmod +x /opt/pnpm/pnpm
 ln -sf /opt/pnpm/pnpm /usr/local/bin/pnpm
 
 # 4. Non-root runtime user. uid 1000 is conventional for the first user.
-#    nologin shell + no sudo group => process cannot escalate even if
-#    compromised, even if it manages to spawn a shell.
+#    /bin/bash + no sudo group + no password => normal unprivileged user.
+#
+#    NOTE: the shell intentionally is /bin/bash, NOT /usr/sbin/nologin.
+#
+#    The earlier (systemd-driven) iteration of this design used nologin
+#    as a defense-in-depth ("even if the gateway is compromised, the
+#    attacker still cannot interactive-login as openclaw"). That stopped
+#    working when we switched to the foreground launch model: wsl.exe
+#    -u openclaw enters via PAM, PAM spawns the user's login shell, and
+#    nologin promptly prints "This account is currently not available."
+#    and exits 1, so the launcher's run-gateway.sh never gets a chance
+#    to run.
+#
+#    Restoring nologin would only buy us back a defense-in-depth that
+#    doesn't apply in this distro anyway: there is no sshd, no getty,
+#    no external login surface, and the node gateway itself can already
+#    spawn /bin/bash via child_process.spawn -- the user's *login*
+#    shell setting does not gate that. Real isolation is provided by:
+#      * no sudo / no password / not in any privileged group
+#      * wsl.conf disables [automount] and [interop] (no /mnt/c, no
+#        cmd.exe)
+#      * /opt/openclaw and /opt/node are root-owned read-only (locked
+#        in step 6 below)
+#      * gateway binds 127.0.0.1 only
+#    All of which are unaffected by the shell choice.
 #
 #    Ubuntu 24.04 cloud rootfs (what `ubuntu-base.tar.gz` ships) comes
 #    with a pre-baked `ubuntu` user occupying UID 1000. We do not need
 #    that account, and leaving it would force openclaw to a higher UID.
-#    Removing it keeps openclaw at the conventional first-non-system UID
-#    and reduces the attack surface (one fewer shell-capable account).
+#    Removing it keeps openclaw at the conventional first-non-system
+#    UID and trims one extra account from the rootfs.
 log "[4/8] Creating openclaw user..."
 if id -u ubuntu >/dev/null 2>&1; then
     log "[4/8] Removing default 'ubuntu' user to free UID 1000..."
@@ -74,8 +97,13 @@ if id -u ubuntu >/dev/null 2>&1; then
     userdel --remove --force ubuntu 2>/dev/null || true
 fi
 if ! id -u openclaw >/dev/null 2>&1; then
-    useradd --create-home --uid 1000 --shell /usr/sbin/nologin openclaw
+    useradd --create-home --uid 1000 --shell /bin/bash openclaw
 fi
+# Lock the password explicitly. useradd without -p leaves the password
+# field empty in /etc/shadow which on most distros means "any password
+# accepted" or "locked" depending on PAM config; `passwd -l` makes it
+# unambiguously locked across all configurations.
+passwd -l openclaw >/dev/null 2>&1 || true
 
 # 5. Build OpenClaw. Source arrives as a tarball produced by `git archive`
 #    on the build machine and shipped inside the .exe; only commit-tracked
@@ -111,17 +139,104 @@ cp -a "${SRC_DIR}"/. /opt/openclaw/
 chown -R openclaw:openclaw /opt/openclaw
 rm -rf "${SRC_DIR}" "${SRC_TARBALL}"
 
-# 6. Install WSL boot config + systemd unit.
-log "[6/8] Installing wsl.conf and systemd unit..."
+# 6. Install WSL boot config + foreground launcher wrapper.
+#
+# We deliberately do NOT enable openclaw-gateway.service. The customer
+# launch model is now "click desktop icon -> Windows Terminal opens ->
+# wsl.exe runs run-gateway.sh in the foreground -> Ctrl-C stops it,
+# closing the window". This matches the native dev experience (`pnpm
+# dev` / `node openclaw.mjs gateway run`) and lets the user see logs,
+# stop the process, and restart it without learning systemctl.
+#
+# We still SHIP the unit file (disabled) so power users who want
+# always-on daemon behaviour can `sudo systemctl enable --now
+# openclaw-gateway.service` after first launch. See the design doc
+# (Q5/Q7 re-evaluation in 2026-04-23-wsl-sandbox-design.md).
+log "[6/8] Installing wsl.conf, run-gateway.sh, and systemd unit (disabled)..."
 install -m 0644 /tmp/rootfs-config/wsl.conf /etc/wsl.conf
 install -m 0644 /tmp/rootfs-config/openclaw-gateway.service \
     /etc/systemd/system/openclaw-gateway.service
-systemctl enable openclaw-gateway.service
+# Explicitly disable the unit just in case the rootfs cache somehow
+# shipped it pre-enabled. `disable` on an already-disabled unit is a
+# no-op, so this is idempotent.
+systemctl disable openclaw-gateway.service 2>/dev/null || true
 
-# 7. Pre-create writable allowlist directories matching ReadWritePaths=
-#    in the systemd unit. Doing this at provision time avoids first-boot
-#    races where the gateway starts before /home is fully provisioned.
-log "[7/8] Creating writable allowlist directories..."
+# Foreground launcher wrapper. The Windows-side openclaw-launcher.cmd
+# spawns this via `wsl.exe -d aidaptivclaw -u openclaw -- /opt/openclaw/
+# run-gateway.sh` inside a Windows Terminal tab, so the user sees stdout
+# / stderr in real time and can Ctrl-C to stop the gateway exactly as
+# they would when running `node openclaw.mjs gateway run` natively.
+#
+# We `exec` node so PID 1 of the wsl session IS the node process: that
+# means SIGINT from Windows Terminal's Ctrl-C reaches node directly
+# without any bash wrapper swallowing it.
+cat > /opt/openclaw/run-gateway.sh <<'GATEWAY_EOF'
+#!/usr/bin/env bash
+# Foreground gateway launcher for the WSL sandbox build.
+# Invoked from Windows: wsl.exe -d aidaptivclaw -u openclaw -- /opt/openclaw/run-gateway.sh
+set -e
+echo "[aiDAPTIVClaw] Starting OpenClaw gateway on http://localhost:18789/"
+echo "[aiDAPTIVClaw] Press Ctrl-C in this window to stop."
+echo ""
+cd "${HOME}"
+# `--force` makes the gateway take over port 18789 if a stale listener
+# still holds it (e.g. previous wsl session was killed without graceful
+# shutdown). `--bind loopback` binds 127.0.0.1 + ::1 only, never the
+# distro's external interface.
+exec /opt/node/bin/node /opt/openclaw/openclaw.mjs gateway run \
+    --bind loopback --port 18789 --force
+GATEWAY_EOF
+chmod 0755 /opt/openclaw/run-gateway.sh
+
+# Lock down the install dir as a substitute for the (now-disabled)
+# systemd unit's ProtectSystem=strict + ProtectHome=read-only +
+# ReadWritePaths= filesystem isolation.
+#
+# Concretely we want: openclaw user can read & execute everything
+# under /opt/openclaw but cannot modify it. Step 5 set the tree to
+# openclaw:openclaw to make the build work, which means openclaw
+# could `chmod u+w` and write again -- ownership has to change to
+# root:root before chmod, otherwise the chmod is purely advisory.
+#
+# `chmod -R a-w,a+rX`:
+#   * a-w   -- remove write bit from owner / group / other
+#   * a+rX  -- add read for everyone; capital X adds execute only on
+#              directories and files that already had ANY execute bit,
+#              so we don't accidentally turn .json / .md / .js into
+#              executables.
+#
+# Effect: /opt/openclaw becomes a read-only, executable code tree.
+# An LLM-driven gateway that turns hostile cannot backdoor its own
+# binaries to run on next launch. It can still write /home/openclaw/
+# workspace and /home/openclaw/.openclaw, where it legitimately
+# stores user files and runtime state.
+#
+# /opt/node is already root-owned (step 2 created it as root and
+# extracted the official tarball with root ownership), so the
+# openclaw user has never been able to write to it. We re-chmod it
+# anyway as defense-in-depth in case a future change accidentally
+# chowns it.
+log "[6/8] Locking /opt/openclaw and /opt/node read-only..."
+chown -R root:root /opt/openclaw /opt/node
+chmod -R a-w,a+rX /opt/openclaw /opt/node
+
+# Mask Ubuntu Pro's WSL-side bridge. It is preinstalled on the Ubuntu
+# 24.04 cloud rootfs and tries to talk to a Windows-side companion via
+# /mnt/c/Windows/system32/cmd.exe. Our wsl.conf disables automount of
+# Windows drives (sandbox isolation, Q3 = D in the design), so the
+# bridge can never find cmd.exe and fails on every start. Without
+# masking it spams the journal at ~2-second intervals (restart counter
+# climbs into the hundreds within minutes) which buries our own logs.
+# The bridge is irrelevant to OpenClaw, so masking is a clean no-op
+# for functionality and a big win for log hygiene.
+systemctl mask wsl-pro.service || true
+
+# 7. Pre-create writable allowlist directories. Even though the
+#    foreground launcher does not have systemd's ReadWritePaths=
+#    enforcement, run-gateway.sh expects these to exist (the gateway
+#    writes session/log/canvas state under ~/.openclaw and treats
+#    workspace/ as the project root).
+log "[7/8] Creating runtime directories..."
 install -d -m 0755 -o openclaw -g openclaw \
     /home/openclaw/workspace \
     /home/openclaw/.openclaw \

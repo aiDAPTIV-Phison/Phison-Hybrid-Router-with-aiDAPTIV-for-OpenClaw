@@ -96,6 +96,23 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 }
 Write-Host "  git:        OK" -ForegroundColor Green
 
+# Sanity check: refuse to build with LF-only Windows scripts. A LF-only
+# .cmd file makes some Windows cmd.exe builds silently mis-parse every
+# `set`/`setlocal` line, which manifests at runtime as the launcher's
+# marker check failing even when the marker is on disk. We hit this
+# once already (see .gitattributes for the full forensic note); never
+# again -- if a developer re-introduces an LF-only Windows script via
+# editor config or a careless `git checkout`, fail the build now.
+$LineEndingFixer = Join-Path $PSScriptRoot "fix-line-endings.ps1"
+if (Test-Path $LineEndingFixer) {
+    & $LineEndingFixer -Check
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Line-ending sanity check failed. Run: pwsh $LineEndingFixer"
+        exit 1
+    }
+    Write-Host "  Line endings: OK" -ForegroundColor Green
+}
+
 if (-not (Test-Path $RootfsDir)) {
     New-Item -ItemType Directory -Path $RootfsDir -Force | Out-Null
 }

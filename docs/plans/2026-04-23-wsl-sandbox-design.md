@@ -24,6 +24,31 @@
 >
 > The original code blocks below are kept for historical traceability; ground truth is the actual files in `installer/` and `scripts/`.
 
+> **🔄 REVISION 2026-04-26 — foreground launch model (Q5/Q7 re-evaluation)**
+>
+> Original plan (Q5=D, Q7=A): the gateway is a hardened systemd unit that auto-starts on distro boot; the desktop shortcut just opens a browser; a hidden keep-alive `wsl --exec /bin/sleep infinity` keeps the distro from idle-shutting-down between clicks.
+>
+> Customer feedback in 2026-04-26 testing was that this hides the gateway from the user: there is no terminal to read live logs, no `Ctrl-C` to stop the gateway, and the auto-launched browser at install time felt presumptuous. The native dev experience (`node openclaw.mjs gateway run`) — visible terminal, streaming logs, Ctrl-C to quit — is what users actually want from this product.
+>
+> **The launch model is now:**
+>
+> 1. **Install ≠ launch.** `post-install.ps1` Phase 2 finishes when provisioning is done. It writes a marker, creates the desktop shortcut, and exits. **It does not start the gateway and does not open the browser.** The user must explicitly click the desktop icon to launch.
+> 2. **Click → visible Windows Terminal tab.** `installer/openclaw-launcher.cmd` launches `wt.exe new-tab --title "aiDAPTIVClaw Gateway" -- wsl.exe -d aidaptivclaw -u openclaw -- /opt/openclaw/run-gateway.sh`. The terminal is the gateway: stdout/stderr stream to it; the gateway is PID 1 of the wsl session via `exec`, so Ctrl-C delivers SIGINT directly to node and shuts the gateway down cleanly. Closing the terminal window also stops the gateway.
+> 3. **Browser auto-opens after readiness.** The launcher polls `127.0.0.1:18789` from Windows; once the port is bound, it requests the dashboard URL with auth token and opens it in the user's default browser. Detecting "already running" (icon clicked twice) skips the new terminal and just opens a browser tab.
+> 4. **No keep-alive helper.** WSL2 idle-shuts-down a distro a few seconds after the last `wsl.exe` session exits — but the gateway terminal IS a live `wsl.exe` session. As long as the user keeps the gateway window open, the distro stays alive. When they close it, the gateway stops, the wsl session exits, and the distro powers down — exactly the behaviour we want. The previously-required `installer/openclaw-keepalive.ps1` is deleted.
+> 5. **Systemd unit shipped DISABLED.** `provision.sh` no longer runs `systemctl enable openclaw-gateway.service`. The unit file is still installed at `/etc/systemd/system/` so power users who want always-on daemon behaviour can `sudo systemctl enable --now openclaw-gateway.service` after first launch. Default users get the foreground experience.
+>
+> **What we lose vs. systemd unit:** The hardening directives in the unit (CapabilityBoundingSet, Protect*, ReadWritePaths, etc.) are no longer enforced because the gateway is no longer started by systemd. The remaining sandboxing is:
+>
+> - Runs as the non-root `openclaw` user (uid 1000, `/bin/bash` shell, password locked, not in sudo group). Cannot escalate. The shell was changed from `/usr/sbin/nologin` to `/bin/bash` on 2026-04-26 because `wsl.exe -u openclaw` enters via PAM and PAM spawns the login shell, so nologin caused "This account is currently not available." and exit 1 before run-gateway.sh ever ran. Reverting to nologin would only buy back a defense-in-depth that does not apply here: no sshd / getty exists in this distro, and the node gateway can already `child_process.spawn('/bin/bash')` regardless of the user's login shell.
+> - WSL distro itself has `automount.enabled=false` + `interop.enabled=false` (`wsl.conf`), so the gateway sees neither `/mnt/c/*` nor `cmd.exe`.
+> - Bound to `127.0.0.1:18789` only; never the distro's external interface.
+> - **`/opt/openclaw` and `/opt/node` are `chown -R root:root` + `chmod -R a-w,a+rX` at the end of `provision.sh` step 6.** The openclaw user retains read+execute but not write, so a hostile gateway cannot backdoor `openclaw.mjs`, `run-gateway.sh`, or any bundled `node_modules` to persist across launches. This is the cheap-and-effective replacement for the `ProtectSystem=strict` directive that systemd was providing. Workspace and runtime state directories (`/home/openclaw/workspace`, `/home/openclaw/.openclaw`) remain fully writable as the gateway needs.
+>
+> This is enough sandboxing for our threat model (an LLM-driven gateway accidentally running malicious tool code, scoped to a non-root user inside a disposable WSL distro). Power users who want the systemd hardening on top can opt-in via the disabled unit.
+>
+> Affected files: `installer/rootfs/provision.sh` (no `enable`, ships `run-gateway.sh`), `installer/openclaw-launcher.cmd` (full rewrite), `installer/post-install.ps1` (Phase 2 ends after marker write), `installer/openclaw.iss` (no longer ships keep-alive helper). The hardening section below (Step 2: openclaw-gateway.service) and Section 9 (Hardening troubleshooting) still describe the unit's contents accurately — the unit file is unchanged, only its enabled state is.
+
 **Goal:** Convert aiDAPTIVClaw from a native Windows installation (full user privileges) into a WSL2-confined installation (non-root user inside an isolated Ubuntu 24.04 distro with systemd hardening), so OpenClaw can no longer read arbitrary Windows files or escalate privileges if compromised.
 
 **Architecture (Q2=C, online build):** Installer ships a vanilla Ubuntu 24.04 WSL base rootfs + an `openclaw-source.tar.gz` produced by `git archive HEAD` + `provision.sh` + `wsl.conf` + `openclaw-gateway.service`. On install, `wsl --import` registers the base rootfs as the private distro `aidaptivclaw`, then `provision.sh` runs **inside the customer's distro** to install Node.js + pnpm + build OpenClaw under `/opt/openclaw` and enable the systemd unit. Subsequent boots: the systemd unit (`openclaw-gateway.service`) starts the gateway as the non-root `openclaw` user with hardening directives confining writes to `/home/openclaw/{workspace,.openclaw}` and `/tmp`. The Windows launcher only triggers `wsl.exe -d aidaptivclaw` and opens the browser at `http://localhost:18789` (reachable via WSL2 default localhost forwarding).
@@ -240,6 +265,8 @@ appendWindowsPath=false
 ```
 
 > **Note on `vmIdleTimeout=-1`:** This setting belongs in the host-side `%USERPROFILE%\.wslconfig`, NOT in the per-distro `/etc/wsl.conf`. It is handled by the installer in Task 3.4.
+>
+> **`vmIdleTimeout=-1` only protects the shared utility VM, not individual distros.** Empirically (see `journalctl -u systemd-logind` showing `Operation canceled @p9io.cpp:258 (AcceptAsync)` immediately followed by `The system will power off now!`), `vmIdleTimeout` only controls the shared WSL2 utility VM (`vmmem`/`vmmemWSL`). **Individual distros are still powered off by `systemd-logind` a few seconds after the last `wsl.exe` user session against them exits**, even when a long-running systemd service is active inside. Under the 2026-04-26 foreground launch model this is not a problem — see the revision block at the top of this document. The visible "aiDAPTIVClaw Gateway" Windows Terminal tab IS the wsl.exe session keeping the distro alive; closing it intentionally allows the distro to power off, exactly the desired behaviour. The previously-shipped `installer/openclaw-keepalive.ps1` (which spawned a hidden `wsl --exec /bin/sleep infinity`) is no longer needed and has been removed.
 
 **Step 2: Write `installer/rootfs/openclaw-gateway.service`**
 
@@ -271,8 +298,10 @@ ExecStart=/opt/node/bin/node /opt/openclaw/openclaw.mjs gateway run \
 # --- Sandbox hardening (systemd reference: https://www.freedesktop.org/software/systemd/man/systemd.exec.html) ---
 
 # Filesystem: most of the distro becomes read-only; only writable paths are explicitly listed.
+# ProtectHome must be `read-only`, NOT `tmpfs`. tmpfs hides /home/openclaw and the
+# subsequent ReadWritePaths bind-mounts fail with status=226/NAMESPACE before node runs.
 ProtectSystem=strict
-ProtectHome=tmpfs
+ProtectHome=read-only
 ReadWritePaths=/home/openclaw/workspace /home/openclaw/.openclaw
 PrivateTmp=yes
 
@@ -296,13 +325,17 @@ ProtectProc=invisible
 ProcSubset=pid
 
 # Namespaces
-RestrictNamespaces=yes
+# RestrictNamespaces= intentionally omitted. RestrictNamespaces=yes makes the
+# OpenClaw gateway exit with status=1 during init (probably koffi / sharp /
+# Node worker_threads call clone(2) / unshare(2) with namespace flags). See
+# "Hardening troubleshooting" below.
 LockPersonality=yes
 
 # Architecture / system calls
-SystemCallArchitectures=native
-SystemCallFilter=@system-service
-SystemCallFilter=~@privileged @resources @mount @debug @cpu-emulation @obsolete @raw-io @reboot @swap @module
+# SystemCallFilter / SystemCallArchitectures intentionally omitted -- same
+# bisection as RestrictNamespaces. Most likely culprit is `~@resources`
+# blocking setrlimit(2). Re-introduce only as a permissive ALLOW-list
+# captured from a known-good `strace -c` run, not as a tightened denylist.
 
 # Memory: deny W+X (defense-in-depth against JIT-style exploits; Node uses RWX for V8 so we leave this off if Node breaks)
 # MemoryDenyWriteExecute=yes  # disabled: Node V8 needs RWX pages
@@ -1813,8 +1846,32 @@ Sections to cover:
      wsl -d aidaptivclaw -u root -e systemctl status openclaw-gateway.service
      wsl -d aidaptivclaw -u root -e journalctl -u openclaw-gateway.service -n 100
      ```
-   - "Sandbox VM keeps shutting down after a minute" → check `%USERPROFILE%\.wslconfig` contains `vmIdleTimeout=-1`.
+   - "Gateway window closed by itself after a minute (under 2026-04-26 foreground launch model)" → unexpected; the gateway window IS the distro's keep-alive. If it closed without user input, the gateway probably crashed — check the terminal scrollback for stack traces. If the terminal is gone too, re-click the desktop icon: the launcher will boot the distro, spawn a fresh terminal tab, and you'll see the next failure live.
+   - "openclaw-gateway journal shows `Operation canceled @p9io.cpp:258` followed by `power off`" (only relevant if a power user opted into the systemd unit via `systemctl enable --now`) → the entire distro got idle-shut-down by WSL2 because no `wsl.exe` session was attached. Workaround for daemon mode: keep at least one wsl.exe session open (e.g. `wsl -d aidaptivclaw bash`) or switch back to the default foreground launch model.
+   - "wsl-pro.service spamming the journal with cmd.exe errors" → harmless leftover from Ubuntu 24.04's preinstalled Ubuntu Pro bridge. `provision.sh` runs `systemctl mask wsl-pro.service` to silence it; if you imported the distro by hand and skipped provision.sh, mask it manually.
    - To start fresh: `wsl --unregister aidaptivclaw` then re-run the installer.
+
+9. **Hardening troubleshooting (`openclaw-gateway.service` won't start)**
+
+   Symptom: `openclaw-gateway.service` enters a tight crash loop. `systemctl status` shows `Main process exited, code=exited, status=1/FAILURE` with the journal containing `[hybrid-gw] initializing` followed by `[gateway] force: no listeners on port 18789` but **no** subsequent `[gateway] listening` line. CPU time per attempt is ~18–20 s. There is no signal name (no `SIGSYS` / `SIGSEGV` / `SIGTERM`) — Node calls `process.exit(1)` cleanly.
+
+   Root cause: a hardening directive in the original Q5=D profile is incompatible with the OpenClaw runtime. We bisected this on a target machine by writing a drop-in at `/etc/systemd/system/openclaw-gateway.service.d/diag.conf` containing exactly:
+
+   ```ini
+   [Service]
+   RestrictNamespaces=no
+   SystemCallFilter=
+   SystemCallArchitectures=
+   ```
+
+   followed by `systemctl daemon-reload && systemctl restart openclaw-gateway.service`. With those three directives reset (and **all** other hardening — `ProtectSystem=strict`, `ProtectHome=read-only`, `ReadWritePaths=`, `PrivateTmp=yes`, `PrivateDevices=yes`, `ProtectKernel*=yes`, `ProtectProc=invisible`, `ProcSubset=pid`, `NoNewPrivileges=yes`, `CapabilityBoundingSet=`, `RestrictSUIDSGID=yes`, `LockPersonality=yes`, `RestrictRealtime=yes` — still in effect) the gateway comes up cleanly and `Invoke-WebRequest http://127.0.0.1:18789/` returns HTTP 200.
+
+   Conclusion: the shipping `openclaw-gateway.service` omits `RestrictNamespaces=`, `SystemCallFilter=` and `SystemCallArchitectures=`. Re-tightening any of them is a future task and must be done by capturing OpenClaw's actual runtime syscalls (e.g. `strace -c`) and emitting a permissive ALLOW-list — not by tightening the denylist further.
+
+   Likely root causes (each compatible with `process.exit(1)` and ~20 s CPU before exit):
+   - `RestrictNamespaces=yes` blocks `clone(2)` / `unshare(2)` with namespace flags. Several Node native modules (koffi, sharp, worker_threads internals on certain libc paths) call these during init.
+   - `SystemCallFilter=~@resources` blocks `setrlimit(2)`, which Node calls at startup to raise its file-descriptor limit. Node is tolerant of EPERM here but throws on other paths.
+   - `SystemCallFilter=~@debug` blocks `ptrace(2)`, used by some native modules' crash handlers.
 
 **Step 2: Commit**
 

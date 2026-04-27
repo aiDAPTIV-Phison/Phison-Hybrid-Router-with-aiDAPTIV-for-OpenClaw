@@ -635,12 +635,20 @@ function Push-WslGuestConfig {
     try {
         Set-Content -LiteralPath $hostTmp -Value $Json -Encoding UTF8 -NoNewline
 
-        # Convert C:\Users\...\AppData\Local\Temp\foo.json -> /mnt/c/...
-        # so the in-WSL `install` command can read it.
-        $wslSrc = (& wsl.exe -d $Distro -- wslpath -u $hostTmp 2>$null).Trim()
-        if (-not $wslSrc) {
-            throw "wslpath returned empty for $hostTmp"
+        # Translate C:\Users\...\AppData\Local\Temp\foo.json -> /mnt/c/...
+        # MANUALLY, NOT via `wsl.exe -- wslpath -u <path>`. The `--` form
+        # passes argv through the distro's default shell (bash), which
+        # treats backslashes as escape characters on UNQUOTED arguments
+        # -- so `\U`, `\A`, `\L`, `\T` (every initial of the segments
+        # in `\Users\AppData\Local\Temp`) get stripped before wslpath
+        # ever sees the path. Doing the translation in PowerShell means
+        # the command string we feed to bash contains forward slashes
+        # only, with nothing for bash to escape-process.
+        if ($hostTmp -notmatch '^[A-Za-z]:\\') {
+            throw "Unexpected temp path shape: $hostTmp"
         }
+        $drive  = $hostTmp.Substring(0, 1).ToLower()
+        $wslSrc = '/mnt/' + $drive + ($hostTmp.Substring(2) -replace '\\', '/')
 
         & wsl.exe -d $Distro -u root -- bash -c (
             "install -m 0640 -o openclaw -g openclaw " +
@@ -1054,61 +1062,56 @@ function Invoke-Phase2 {
     Apply-CloudProviderConfig -Distro $DistroName -Options $installOpts
     Remove-InstallOptionsSecrets
 
-    # provision.sh installed /etc/wsl.conf with [boot] systemd=true and
-    # enabled the gateway unit, but the distro is currently running WITHOUT
-    # systemd (wsl.conf is read at boot, not hot-reloaded). Terminate so
-    # the next invocation cold-boots with systemd PID 1.
-    Write-Log "Restarting distro to activate systemd + gateway service..."
+    # ----------------------------------------------------------------
+    # Foreground-launch model (chosen 2026-04-26):
+    #   * The systemd unit is shipped DISABLED. We do NOT start the
+    #     gateway here -- it runs only when the user clicks the
+    #     desktop icon, in a visible Windows Terminal window, in the
+    #     foreground, exactly like `node openclaw.mjs gateway run`.
+    #   * Therefore Phase 2 has no "wait for gateway / open browser"
+    #     step. We finish provisioning, drop a shortcut, write the
+    #     install-complete marker, and exit. The user's first click
+    #     on the shortcut is the first time the gateway boots.
+    #
+    # Earlier revisions of this script:
+    #   * `wsl --terminate` to cold-boot systemd
+    #   * spawned a hidden keep-alive `wsl --exec /bin/sleep infinity`
+    #   * polled `ss -ltn` for port 18789 inside the distro
+    #   * polled `Invoke-WebRequest http://localhost:18789/` from Windows
+    #   * `Start-Process` the dashboard URL
+    # All of that is now the launcher's job (openclaw-launcher.cmd).
+    # If you are tempted to add any of it back here, you are probably
+    # accidentally re-creating the auto-start daemon model -- talk to
+    # the design doc first (docs/plans/2026-04-23-wsl-sandbox-design.md
+    # Q5/Q7 re-evaluation).
+    # ----------------------------------------------------------------
+
+    # Terminate the distro before we hand off to the user. The session
+    # that ran provision.sh was created by `wsl --import` and predates
+    # the wsl.conf we just installed; sandbox-critical settings
+    # ([automount] enabled=false and [interop] enabled=false) only
+    # apply on the next cold boot. If we leave the distro running, the
+    # user's first launcher click reuses the un-sandboxed session, the
+    # gateway can see /mnt/c/* and exec cmd.exe, and our isolation
+    # promise (Q3=D in the design) is silently broken.
+    # `wsl --terminate` is a millisecond-cheap operation; the next
+    # `wsl.exe -d aidaptivclaw ...` call cold-boots the distro and
+    # picks up the new wsl.conf.
+    Write-Log "Terminating distro so wsl.conf takes effect on next launch..."
     Invoke-NativeNoThrow { & wsl.exe --terminate $DistroName 2>&1 | Out-Null }
 
-    # First "real" boot: systemd PID 1 starts openclaw-gateway.service via
-    # its WantedBy=multi-user.target hook.
-    Invoke-NativeNoThrow { & wsl.exe -d $DistroName -u root -e /bin/true 2>&1 | Out-Null }
-    Start-Sleep -Seconds 5
-
-    # Wait for the gateway HTTP endpoint to respond on Windows-side
-    # localhost (WSL2 default localhost forwarding bridges 127.0.0.1).
-    $ready = $false
-    for ($i = 0; $i -lt 30; $i++) {
-        try {
-            $resp = Invoke-WebRequest -Uri "http://localhost:18789/" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
-            if ($resp.StatusCode -lt 500) { $ready = $true; break }
-        } catch { }
-        Start-Sleep -Seconds 1
-    }
-    if (-not $ready) {
-        Write-Log "WARN: gateway did not respond within 30s"
-        Show-FatalDialog "Gateway didn't start" `
-            ("The OpenClaw gateway did not respond on http://localhost:18789 within 30 seconds.`n`n" +
-             "Diagnose with:`n" +
-             "  wsl -d $DistroName -u root -e systemctl status openclaw-gateway.service`n" +
-             "  wsl -d $DistroName -u root -e journalctl -u openclaw-gateway.service -n 100`n`n" +
-             "See $LogFile for installer logs.")
-        Unregister-Phase2RunOnce
-        exit 1
-    }
-    Write-Log "Gateway responding on http://localhost:18789"
-
-    # Create user-facing shortcuts and write the install-complete marker.
-    # By construction, this is the LAST thing we do before declaring
-    # success — so "shortcut on disk" always implies "Phase 2 finished
-    # successfully and the gateway responded". A user who sees an icon
-    # appear on their desktop knows the install is genuinely usable; a
-    # user who looks and sees no icon knows it failed (or is still
-    # in-flight). No misleading half-state is possible.
+    # Create user-facing shortcuts and write the install-complete
+    # marker. By construction this is the LAST thing we do before
+    # declaring success, so "shortcut on disk" continues to imply
+    # "install completed without error". The launcher will check this
+    # marker on every click and refuse to run if it's missing (defense
+    # against stale shortcuts surviving a failed reinstall).
     New-LauncherShortcuts
     Write-InstallCompleteMarker
 
-    # Ask the gateway for the dashboard URL (with auth token). Falls back
-    # to the bare URL if the CLI doesn't support --print-url for any reason.
-    $dashUrl = ""
-    try {
-        $dashUrl = (& wsl.exe -d $DistroName -u openclaw -e /opt/node/bin/node /opt/openclaw/openclaw.mjs dashboard --print-url 2>$null)
-    } catch { }
-    if ([string]::IsNullOrWhiteSpace($dashUrl)) {
-        $dashUrl = "http://localhost:18789/"
-    }
-    Start-Process $dashUrl.Trim()
+    Write-Log "Install complete. Click the desktop shortcut to start aiDAPTIVClaw."
+    Write-Log "(A 'aiDAPTIVClaw Gateway' terminal window will open with live logs;"
+    Write-Log " press Ctrl-C in that window to stop the gateway.)"
 
     Unregister-Phase2RunOnce
     Write-Log "Phase 2 complete"

@@ -71,7 +71,15 @@ Source: "rootfs\provision.sh"; DestDir: "{app}\rootfs"; Flags: ignoreversion
 ; PowerShell provisioning orchestrator (runs in two phases — see header).
 Source: "post-install.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
-; Launcher and helpers
+; Launcher and helpers.
+;
+; The launcher boots the distro, opens a Windows Terminal tab running
+; the gateway in the foreground (Ctrl-C stops it), and points the user's
+; browser at the dashboard. There is no longer a hidden keep-alive
+; helper -- the visible gateway window IS the keep-alive: WSL2 only
+; idle-shuts-down a distro when it has zero attached wsl.exe sessions,
+; and the launcher's wt.exe tab counts as one for as long as the user
+; keeps it open. See docs/plans/2026-04-23-wsl-sandbox-design.md.
 Source: "openclaw-launcher.vbs"; DestDir: "{app}"; Flags: ignoreversion
 Source: "openclaw-launcher.cmd"; DestDir: "{app}"; Flags: ignoreversion
 ; openclaw.json template — patched by post-install.ps1 Phase 2 with the
@@ -110,12 +118,17 @@ Type: files; Name: "{app}\install.log"
 var
   BuildSucceeded: Boolean;
   NeedsReboot: Boolean;
-  { Cloud provider wizard page. Values are read by RunPostInstallBuild ->
-    WriteInstallOptions and consumed by post-install.ps1 Phase 2. The
-    actual openclaw.json (both Windows host copy and WSL guest copy) is
-    written by Phase 2 from openclaw-template.json + these values, so
-    the apiKey never sits in plain text in {app}\ longer than the
-    install window. }
+  // Cloud provider wizard page. Values are read by RunPostInstallBuild ->
+  // WriteInstallOptions and consumed by post-install.ps1 Phase 2. The
+  // actual openclaw.json (both Windows host copy and WSL guest copy) is
+  // written by Phase 2 from openclaw-template.json + these values, so
+  // the apiKey never sits in plain text under the install directory
+  // longer than the install window.
+  // NOTE: line comments (//) are used here on purpose. Inno Setup's
+  // Pascal Script supports {curly} and (*starstar*) block comments but
+  // neither form nests, and embedding any closer (such as a }-terminated
+  // app-dir constant or a *) glyph) inside the comment body silently
+  // ends the comment and turns the rest into broken code.
   CloudPage: TWizardPage;
   ProviderCombo: TNewComboBox;
   ApiKeyEdit: TNewEdit;
@@ -462,14 +475,16 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
   begin
-    { openclaw.json (both the host backward-compat copy under
-      %USERPROFILE%\.openclaw\ and the WSL guest copy under
-      /home/openclaw/.openclaw/) is now written by post-install.ps1
-      Phase 2, populated from openclaw-template.json + the
-      [provider] section of install-options.ini. Doing it in Phase 2
-      means we never write a half-configured config to disk if the
-      install fails partway, and the apiKey stays inside the WSL
-      sandbox rather than the Windows user profile. }
+    // openclaw.json (both the host backward-compat copy under
+    // %USERPROFILE%\.openclaw\ and the WSL guest copy under
+    // /home/openclaw/.openclaw/) is now written by post-install.ps1
+    // Phase 2, populated from openclaw-template.json plus the
+    // provider section of install-options.ini. Doing it in Phase 2
+    // means we never write a half-configured config to disk if the
+    // install fails partway, and the apiKey stays inside the WSL
+    // sandbox rather than the Windows user profile.
+    // Comments here are line comments on purpose -- see the comment
+    // near the var block above for the rationale.
     RunPostInstallBuild;
   end;
 end;

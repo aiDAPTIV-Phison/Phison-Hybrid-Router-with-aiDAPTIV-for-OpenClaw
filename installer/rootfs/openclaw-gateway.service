@@ -20,16 +20,33 @@ WorkingDirectory=/home/openclaw
 
 Environment=HOME=/home/openclaw
 Environment=NODE_ENV=production
-Environment=OPENCLAW_GATEWAY_BIND=127.0.0.1
+# `OPENCLAW_GATEWAY_BIND` is a *symbolic profile*, not an IP. The gateway
+# CLI rejects host aliases like 127.0.0.1 / 0.0.0.0 / localhost outright
+# (see src/cli/gateway-cli/run.ts and docs/gateway/configuration-reference.md).
+# `loopback` = listen on 127.0.0.1 only -- exactly what we want for a
+# WSL2-internal port that the Windows host reaches via WSL2 mirrored /
+# auto-forwarded localhost.
+Environment=OPENCLAW_GATEWAY_BIND=loopback
 Environment=OPENCLAW_GATEWAY_PORT=18789
 
-ExecStart=/opt/node/bin/node /opt/openclaw/openclaw.mjs gateway run --bind 127.0.0.1 --port 18789 --force
+ExecStart=/opt/node/bin/node /opt/openclaw/openclaw.mjs gateway run --bind loopback --port 18789 --force
 
 # --- Filesystem isolation ---
 # Most of the distro becomes read-only; only the explicitly listed
 # ReadWritePaths are writable. This is the core of the sandbox.
+#
+# Note: ProtectHome MUST be `read-only`, not `tmpfs`. With `tmpfs`,
+# systemd overlays an empty tmpfs at /home inside the service's mount
+# namespace, which hides /home/openclaw entirely. The subsequent
+# ReadWritePaths= bind-mounts then fail with
+#   Failed to set up mount namespacing: /home/openclaw/.openclaw:
+#   No such file or directory
+# and the unit dies with status=226/NAMESPACE before node ever runs.
+# `read-only` keeps the real /home directory tree visible (so the two
+# allowlisted subdirectories exist for ReadWritePaths to punch through)
+# while still preventing writes anywhere else under /home.
 ProtectSystem=strict
-ProtectHome=tmpfs
+ProtectHome=read-only
 ReadWritePaths=/home/openclaw/workspace /home/openclaw/.openclaw
 PrivateTmp=yes
 
@@ -55,13 +72,40 @@ ProtectProc=invisible
 ProcSubset=pid
 
 # --- Namespaces ---
-RestrictNamespaces=yes
+# RestrictNamespaces= is intentionally NOT set.
+#
+# Empirically, RestrictNamespaces=yes makes the OpenClaw gateway exit with
+# code=exited, status=1/FAILURE during startup -- after `[hybrid-gw]
+# initializing` is printed but before the gateway can bind port 18789. We
+# bisected this against a drop-in that reset (only) RestrictNamespaces=,
+# SystemCallFilter= and SystemCallArchitectures=, which made the gateway
+# come up cleanly with all other hardening (ProtectSystem/ProtectHome/
+# ReadWritePaths/PrivateTmp/PrivateDevices/ProtectKernel*/ProtectProc/
+# ProcSubset/NoNewPrivileges/CapabilityBoundingSet/RestrictSUIDSGID/
+# LockPersonality/RestrictRealtime) still in effect. See
+# docs/plans/2026-04-23-wsl-sandbox-design.md "Hardening troubleshooting".
+#
+# Suspected cause: koffi / sharp / Node.js worker_threads call clone(2) or
+# unshare(2) with namespace flags during init; RestrictNamespaces=yes turns
+# those into EPERM and OpenClaw aborts.
 LockPersonality=yes
 
 # --- System call filtering ---
-SystemCallArchitectures=native
-SystemCallFilter=@system-service
-SystemCallFilter=~@privileged @resources @mount @debug @cpu-emulation @obsolete @raw-io @reboot @swap @module
+# SystemCallFilter= and SystemCallArchitectures= are intentionally NOT set.
+#
+# Same bisection as RestrictNamespaces above: the original profile
+#   SystemCallArchitectures=native
+#   SystemCallFilter=@system-service
+#   SystemCallFilter=~@privileged @resources @mount @debug @cpu-emulation
+#                    @obsolete @raw-io @reboot @swap @module
+# kills the gateway during init. The most likely culprit inside that
+# blocklist is `~@resources` (blocks setrlimit(2), which Node.js calls at
+# startup to raise its file-descriptor limit) and/or `~@debug` (blocks
+# ptrace(2), used by some native modules' crash handlers). Re-introducing
+# any subset is left as a follow-up: it should be done by writing a
+# permissive ALLOW-list specific to OpenClaw's actual runtime syscalls
+# (captured via `strace -c` on a happy path), not by tightening @system-
+# service further.
 
 # --- Memory ---
 # MemoryDenyWriteExecute=yes intentionally NOT set: Node.js V8 needs
