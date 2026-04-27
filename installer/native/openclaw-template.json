@@ -1,0 +1,143 @@
+{
+  "meta": {
+    "lastTouchedVersion": "2026.3.12",
+    "lastTouchedAt": ""
+  },
+  "wizard": {
+    "lastRunAt": "",
+    "lastRunVersion": "2026.3.12",
+    "lastRunCommand": "installer",
+    "lastRunMode": "local"
+  },
+  "auth": {
+    "profiles": {
+      "openrouter:default": {
+        "provider": "openrouter",
+        "mode": "api_key"
+      }
+    }
+  },
+  "models": {
+    "providers": {
+      "openrouter": {
+        "baseUrl": "https://openrouter.ai/api/v1",
+        "apiKey": "",
+        "models": []
+      },
+      "llamacpp": {
+        "baseUrl": "http://127.0.0.1:13141/v1",
+        "api": "openai-completions",
+        "apiKey": "empty",
+        "models": []
+      },
+      "llamacpp-large": {
+        "baseUrl": "http://127.0.0.1:13141/v1",
+        "api": "openai-completions",
+        "apiKey": "empty",
+        "models": []
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "openrouter/google/gemini-3.1-flash-lite-preview"
+      },
+      "models": {
+        "openrouter/google/gemini-3.1-flash-lite-preview": {}
+      },
+      "workspace": "C:\\Users\\user\\.openclaw\\workspace",
+      "compaction": {
+        "mode": "safeguard"
+      }
+    }
+  },
+  "tools": {
+    "profile": "coding",
+    "web": {
+      "search": {
+        "enabled": true,
+        "provider": "brave",
+        "apiKey": ""
+      }
+    }
+  },
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto",
+    "restart": true,
+    "ownerDisplay": "raw"
+  },
+  "session": {
+    "dmScope": "per-channel-peer"
+  },
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "loopback",
+    "auth": {
+      "mode": "token",
+      "token": ""
+    },
+    "tailscale": {
+      "mode": "off",
+      "resetOnExit": false
+    },
+    "nodes": {
+      "denyCommands": [
+        "camera.snap",
+        "camera.clip",
+        "screen.record",
+        "contacts.add",
+        "calendar.add",
+        "reminders.add",
+        "sms.send"
+      ]
+    }
+  },
+  "plugins": {
+    "entries": {
+      "hybrid-gateway": {
+        "enabled": true,
+        "config": {
+          "classifier": {
+            "mode": "model",
+            "baseUrl": "http://127.0.0.1:13141/v1",
+            "apiKey": "empty",
+            "model": "gemma-4-26B-A4B-it-Q4_K_M",
+            "maxLatencyMs": 30000,
+            "cacheEnabled": true,
+            "cacheTtlSeconds": 300,
+            "disableThinking": true,
+            "thinkingStrategy": "auto"
+          },
+          "routing": {
+            "policy": "cost-optimize-L2",
+            "skillRoutes": [
+              {
+                "skillPattern": "image-gen",
+                "forceTier": "cloud",
+                "reason": "Image generation requires cloud model with multimodal capabilities"
+              }
+            ],
+            "fallbackEnabled": true
+          },
+          "models": {
+            "gateway": {
+              "provider": "llamacpp",
+              "model": "gemma-4-26B-A4B-it-Q4_K_M"
+            },
+            "edge": {
+              "provider": "llamacpp-large",
+              "model": "gemma-4-26B-A4B-it-Q4_K_M"
+            },
+            "cloud": {
+              "provider": "openrouter",
+              "model": "google/gemini-3.1-flash-lite-preview"
+            }
+          }
+        }
+      }
+    }
+  }
+}
