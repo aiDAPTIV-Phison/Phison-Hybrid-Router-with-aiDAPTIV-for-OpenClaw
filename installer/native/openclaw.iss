@@ -1,4 +1,4 @@
-; aiDAPTIVClaw Windows Installer - Inno Setup Script (NATIVE flavor, Online Install)
+; Phison Hybrid Router with aiDAPTIV for OpenClaw - Inno Setup Script (NATIVE flavor, Online Install)
 ; The installer extracts source code + Node.js, then runs build steps
 ; on the customer's machine. Native flavor builds OpenClaw on Windows
 ; directly (no WSL); see installer/wsl/openclaw.iss for the WSL2-sandbox
@@ -16,17 +16,21 @@
 #endif
 
 [Setup]
-AppId={{E8A3F2B1-7C4D-4E5F-9A1B-2D3C4E5F6A7B}
-AppName=aiDAPTIVClaw
+; AppId regenerated 2026-04-28 for the Phison Hybrid Router with aiDAPTIV for OpenClaw rebrand. Treats
+; this as a brand-new product so existing aiDAPTIVClaw installs are NOT
+; touched on upgrade. Customers must manually uninstall the old aiDAPTIVClaw
+; entry from "Programs and Features" if they want to fully migrate.
+AppId={{E3FF5402-E7FF-41A2-B036-00445FF5BD74}
+AppName=Phison Hybrid Router with aiDAPTIV for OpenClaw
 AppVersion={#AppVersion}
-AppVerName=aiDAPTIVClaw {#AppVersion}
+AppVerName=Phison Hybrid Router with aiDAPTIV for OpenClaw {#AppVersion}
 AppPublisher=aiDAPTIV
-AppPublisherURL=https://github.com/openclaw/openclaw
-AppSupportURL=https://github.com/openclaw/openclaw/issues
-DefaultDirName={localappdata}\aiDAPTIVClaw
-DefaultGroupName=aiDAPTIVClaw
+AppPublisherURL=https://github.com/aiDAPTIV-Phison/OpenClaw-Integration-with-aiDAPTIV
+AppSupportURL=https://github.com/aiDAPTIV-Phison/OpenClaw-Integration-with-aiDAPTIV/issues
+DefaultDirName={localappdata}\Phison Hybrid OpenClaw
+DefaultGroupName=Phison Hybrid OpenClaw
 OutputDir=..\output
-OutputBaseFilename=aidaptiv-claw-setup-native-{#AppVersion}
+OutputBaseFilename=phison-hybrid-openclaw-setup-native-{#AppVersion}
 Compression=lzma2/ultra64
 SolidCompression=yes
 PrivilegesRequired=lowest
@@ -60,15 +64,15 @@ Source: "openclaw-template.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "configure-cloud.cjs"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{userdesktop}\aiDAPTIVClaw"; Filename: "{app}\openclaw-launcher.vbs"; IconFilename: "{app}\Gemini_Generated_Image_aiDAPTIV.ico"; Tasks: desktopicon
-Name: "{group}\aiDAPTIVClaw"; Filename: "{app}\openclaw-launcher.vbs"; IconFilename: "{app}\Gemini_Generated_Image_aiDAPTIV.ico"; Tasks: startmenuicon
-Name: "{group}\Uninstall aiDAPTIVClaw"; Filename: "{uninstallexe}"; Tasks: startmenuicon
+Name: "{userdesktop}\Phison Hybrid OpenClaw"; Filename: "{app}\openclaw-launcher.vbs"; IconFilename: "{app}\Gemini_Generated_Image_aiDAPTIV.ico"; Tasks: desktopicon
+Name: "{group}\Phison Hybrid OpenClaw"; Filename: "{app}\openclaw-launcher.vbs"; IconFilename: "{app}\Gemini_Generated_Image_aiDAPTIV.ico"; Tasks: startmenuicon
+Name: "{group}\Uninstall Phison Hybrid OpenClaw"; Filename: "{uninstallexe}"; Tasks: startmenuicon
 
 [Run]
 ; Post-install build and daemon install are handled in [Code] section (CurStepChanged)
 ; so we can check exit codes and abort on failure.
 ; Only the optional post-install launch remains here.
-Filename: "{app}\openclaw-launcher.vbs"; Description: "Launch aiDAPTIVClaw"; Flags: nowait postinstall skipifsilent shellexec
+Filename: "{app}\openclaw-launcher.vbs"; Description: "Launch Phison Hybrid Router with aiDAPTIV for OpenClaw"; Flags: nowait postinstall skipifsilent shellexec
 
 [UninstallRun]
 ; Remove daemon scheduled task on uninstall
@@ -305,7 +309,7 @@ begin
   SaveStringToFile(LogFile, 'params: ' + Params + #13#10, True);
   SaveStringToFile(LogFile, 'workdir: ' + AppDir + #13#10, True);
 
-  WizardForm.StatusLabel.Caption := 'Building aiDAPTIVClaw (see the console window for progress)...';
+  WizardForm.StatusLabel.Caption := 'Building Phison Hybrid Router with aiDAPTIV for OpenClaw (see the console window for progress)...';
   WizardForm.Refresh;
 
   ExecResult := Exec(CmdExe, Params, AppDir,
@@ -450,7 +454,7 @@ begin
     begin
       WizardForm.FinishedHeadingLabel.Caption := 'Installation Incomplete';
       WizardForm.FinishedLabel.Caption :=
-        'aiDAPTIVClaw files have been extracted, but the build process failed.' + #13#10 + #13#10 +
+        'Phison Hybrid Router with aiDAPTIV for OpenClaw files have been extracted, but the build process failed.' + #13#10 + #13#10 +
         'Check the log file for details:' + #13#10 +
         ExpandConstant('{app}\install.log') + #13#10 + #13#10 +
         'You can retry the build by running:' + #13#10 +
@@ -487,7 +491,7 @@ begin
     ConfigDir := ExpandConstant('{%USERPROFILE}') + '\.openclaw';
     if DirExists(ConfigDir) then
     begin
-      if MsgBox('Do you want to remove aiDAPTIVClaw configuration and data files?' + #13#10 +
+      if MsgBox('Do you want to remove Phison Hybrid Router with aiDAPTIV for OpenClaw configuration and data files?' + #13#10 +
                 ConfigDir + #13#10 + #13#10 +
                 'Click Yes to remove all settings, or No to keep them for future use.',
                 mbConfirmation, MB_YESNO) = IDYES then

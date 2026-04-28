@@ -134,7 +134,7 @@ async function main() {
 
   console.log("");
   console.log("  ===================================================");
-  console.log("  aiDAPTIVClaw - Cloud Model Provider Configuration");
+  console.log("  Phison Hybrid Router with aiDAPTIV for OpenClaw - Cloud Model Provider Configuration");
   console.log("  ===================================================");
   console.log("");
   console.log("  The hybrid-gateway cloud tier needs a cloud model");

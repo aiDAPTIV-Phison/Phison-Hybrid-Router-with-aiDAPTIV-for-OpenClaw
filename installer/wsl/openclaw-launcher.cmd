@@ -1,7 +1,7 @@
 @echo off
 setlocal enableextensions
 
-REM aiDAPTIVClaw launcher (WSL2 sandbox edition, foreground launch model).
+REM Phison Hybrid Router with aiDAPTIV for OpenClaw launcher (WSL2 sandbox edition, foreground launch model).
 REM
 REM Launch model (chosen 2026-04-26, see docs/plans/2026-04-23-wsl-sandbox-design.md):
 REM   * Gateway is NOT a systemd-enabled service. It is a foreground
@@ -13,13 +13,13 @@ REM     terminal session instead of a silent daemon.
 REM
 REM Steps performed by this script:
 REM   0. Verify the install actually completed -- .install-complete marker.
-REM   1. Wake the aidaptivclaw WSL distro to fail-fast on a missing
+REM   1. Wake the phison-hybrid-openclaw WSL distro to fail-fast on a missing
 REM      distro -- e.g. user uninstalled but a stale shortcut survived.
 REM   2. Probe http://127.0.0.1:18789/ -- if the gateway is already
 REM      running -- user clicked the icon a second time -- skip launch
 REM      and just open the browser.
 REM   3. Otherwise spawn a Windows Terminal tab -- or a conhost window
-REM      as fallback -- running wsl -d aidaptivclaw -u openclaw --
+REM      as fallback -- running wsl -d phison-hybrid-openclaw -u openclaw --
 REM      /opt/openclaw/run-gateway.sh. That window IS the gateway
 REM      session: stdout/stderr stream to it, Ctrl-C stops the gateway,
 REM      closing the window stops the gateway.
@@ -34,7 +34,7 @@ REM cmd's quote-tracking state -- and once cmd thinks it's outside
 REM quotes, embedded "(...)" in our message text gets interpreted as
 REM real cmd parens, which prematurely close the surrounding if-block
 REM and leave the rest of the message as garbage commands. This bites
-REM with errors like "X was unexpected at this time" / "這個時候不應有 X".
+REM with errors like "X was unexpected at this time" (zh-TW: equivalent).
 REM
 REM Workaround: keep the body of conditional branches simple -- ideally
 REM just `goto :LABEL_NAME` -- and put the PowerShell dialog calls in
@@ -42,7 +42,7 @@ REM top-level labels below, where cmd doesn't have to balance parens.
 REM
 REM Invoked from openclaw-launcher.vbs.
 
-set "DISTRO=aidaptivclaw"
+set "DISTRO=phison-hybrid-openclaw"
 set "GATEWAY_HOST=127.0.0.1"
 set "GATEWAY_PORT=18789"
 set "FALLBACK_URL=http://localhost:18789/"
@@ -73,11 +73,11 @@ REM     forwarding. Fall back to a plain conhost window on systems
 REM     without wt installed.
 where wt.exe >nul 2>&1
 if errorlevel 1 goto :SPAWN_FALLBACK
-start "" wt.exe new-tab --title "aiDAPTIVClaw Gateway" -- wsl.exe -d %DISTRO% -u openclaw --cd /home/openclaw -- /opt/openclaw/run-gateway.sh
+start "" wt.exe new-tab --title "Phison Hybrid OpenClaw Gateway" -- wsl.exe -d %DISTRO% -u openclaw --cd /home/openclaw -- /opt/openclaw/run-gateway.sh
 goto :WAIT_INIT
 
 :SPAWN_FALLBACK
-start "aiDAPTIVClaw Gateway" cmd.exe /c wsl.exe -d %DISTRO% -u openclaw --cd /home/openclaw -- /opt/openclaw/run-gateway.sh
+start "Phison Hybrid OpenClaw Gateway" cmd.exe /c wsl.exe -d %DISTRO% -u openclaw --cd /home/openclaw -- /opt/openclaw/run-gateway.sh
 goto :WAIT_INIT
 
 REM ----- 4. Wait for gateway, then open the browser ---------------------
@@ -136,12 +136,12 @@ REM Build the dialog message with a single-quoted PowerShell string. We
 REM avoid the `\"` escape entirely: cmd doesn't understand it and
 REM mis-tracks quote state. Newlines come from `n inside a PowerShell
 REM double-quoted string, which we wrap in single quotes from cmd.
-powershell -NoProfile -Command "Add-Type -AssemblyName PresentationFramework; $msg = 'aiDAPTIVClaw is not fully installed.' + [Environment]::NewLine + [Environment]::NewLine + 'The install-complete marker is missing:' + [Environment]::NewLine + '  %MARKER%' + [Environment]::NewLine + [Environment]::NewLine + 'Most likely you double-clicked a leftover shortcut from a previous failed install. Open Apps and Settings, uninstall aiDAPTIVClaw cleanly, then reinstall.' + [Environment]::NewLine + [Environment]::NewLine + 'Diagnostic log: %LAUNCH_LOG%' + [Environment]::NewLine + 'Install log:    %INSTALL_LOG%'; [System.Windows.MessageBox]::Show($msg, 'aiDAPTIVClaw not ready', 'OK', 'Warning') | Out-Null" >nul 2>&1
+powershell -NoProfile -Command "Add-Type -AssemblyName PresentationFramework; $msg = 'Phison Hybrid Router with aiDAPTIV for OpenClaw is not fully installed.' + [Environment]::NewLine + [Environment]::NewLine + 'The install-complete marker is missing:' + [Environment]::NewLine + '  %MARKER%' + [Environment]::NewLine + [Environment]::NewLine + 'Most likely you double-clicked a leftover shortcut from a previous failed install. Open Apps and Settings, uninstall Phison Hybrid Router with aiDAPTIV for OpenClaw cleanly, then reinstall.' + [Environment]::NewLine + [Environment]::NewLine + 'Diagnostic log: %LAUNCH_LOG%' + [Environment]::NewLine + 'Install log:    %INSTALL_LOG%'; [System.Windows.MessageBox]::Show($msg, 'Phison Hybrid OpenClaw not ready', 'OK', 'Warning') | Out-Null" >nul 2>&1
 endlocal
 exit /b 1
 
 :DISTRO_MISSING
-powershell -NoProfile -Command "Add-Type -AssemblyName PresentationFramework; $msg = 'WSL distro %DISTRO% was not found.' + [Environment]::NewLine + [Environment]::NewLine + 'This usually means aiDAPTIVClaw was uninstalled but a desktop shortcut survived. Please reinstall, or delete this shortcut.'; [System.Windows.MessageBox]::Show($msg, 'aiDAPTIVClaw not ready', 'OK', 'Error') | Out-Null" >nul 2>&1
+powershell -NoProfile -Command "Add-Type -AssemblyName PresentationFramework; $msg = 'WSL distro %DISTRO% was not found.' + [Environment]::NewLine + [Environment]::NewLine + 'This usually means Phison Hybrid Router with aiDAPTIV for OpenClaw was uninstalled but a desktop shortcut survived. Please reinstall, or delete this shortcut.'; [System.Windows.MessageBox]::Show($msg, 'Phison Hybrid OpenClaw not ready', 'OK', 'Error') | Out-Null" >nul 2>&1
 endlocal
 exit /b 1
 
@@ -149,6 +149,6 @@ exit /b 1
 REM Don't bring down the gateway window if it's still loading; just
 REM tell the user where to look. The window itself keeps showing live
 REM logs so the user can see what went wrong.
-powershell -NoProfile -Command "Add-Type -AssemblyName PresentationFramework; $msg = 'The aiDAPTIVClaw gateway did not respond on port %GATEWAY_PORT% within 60 seconds.' + [Environment]::NewLine + [Environment]::NewLine + 'Check the aiDAPTIVClaw Gateway terminal window for errors. You can close it and click the desktop icon again to retry.'; [System.Windows.MessageBox]::Show($msg, 'aiDAPTIVClaw not ready', 'OK', 'Warning') | Out-Null" >nul 2>&1
+powershell -NoProfile -Command "Add-Type -AssemblyName PresentationFramework; $msg = 'The Phison Hybrid Router with aiDAPTIV for OpenClaw gateway did not respond on port %GATEWAY_PORT% within 60 seconds.' + [Environment]::NewLine + [Environment]::NewLine + 'Check the Phison Hybrid OpenClaw Gateway terminal window for errors. You can close it and click the desktop icon again to retry.'; [System.Windows.MessageBox]::Show($msg, 'Phison Hybrid OpenClaw not ready', 'OK', 'Warning') | Out-Null" >nul 2>&1
 endlocal
 exit /b 1

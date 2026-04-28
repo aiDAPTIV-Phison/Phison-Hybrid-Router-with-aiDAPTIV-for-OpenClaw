@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Dispatcher for the aiDAPTIVClaw Windows installer build pipeline.
+    Dispatcher for the Phison Hybrid Router with aiDAPTIV for OpenClaw Windows installer build pipeline.
 
 .DESCRIPTION
     The repository ships TWO installer flavors that can be built and

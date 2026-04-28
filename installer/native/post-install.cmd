@@ -1,9 +1,9 @@
 @echo off
-title aiDAPTIVClaw - Building...
+title Phison Hybrid OpenClaw - Building...
 setlocal enabledelayedexpansion
 
 :: ============================================
-:: aiDAPTIVClaw Post-Install Build Script
+:: Phison Hybrid Router with aiDAPTIV for OpenClaw Post-Install Build Script
 :: ============================================
 
 set "APP_DIR=%~1"
@@ -44,14 +44,14 @@ if "%FROM_INSTALLER%"=="1" (
 ) else (
     echo ========================================== > "%LOG%" 2>&1
 )
-echo aiDAPTIVClaw install log >> "%LOG%" 2>&1
+echo Phison Hybrid Router with aiDAPTIV for OpenClaw install log >> "%LOG%" 2>&1
 echo Started: %DATE% %TIME% >> "%LOG%" 2>&1
 echo Install dir: %APP_DIR% >> "%LOG%" 2>&1
 echo ========================================== >> "%LOG%" 2>&1
 
 echo.
 echo ==========================================
-echo   aiDAPTIVClaw - Setting up environment
+echo   Phison Hybrid Router with aiDAPTIV for OpenClaw - Setting up environment
 echo ==========================================
 echo.
 echo   Install dir: %APP_DIR%

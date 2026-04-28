@@ -1,6 +1,6 @@
-<#
+﻿<#
 .SYNOPSIS
-    aiDAPTIVClaw target-machine post-install / WSL provisioning.
+    Phison Hybrid Router with aiDAPTIV for OpenClaw target-machine post-install / WSL provisioning.
 
 .DESCRIPTION
     Dual-phase script invoked by Inno Setup [Code] (Phase 1) and by a
@@ -15,9 +15,9 @@
           same (already-elevated) process (no reboot needed).
 
       Phase 2 (called after reboot via Scheduled Task, OR rerun by the user):
-        * Update %USERPROFILE%\.wslconfig (vmIdleTimeout=-1) — applied
+        * Update %USERPROFILE%\.wslconfig (vmIdleTimeout=-1) -- applied
           BEFORE provisioning so the build is not killed by idle timeout.
-        * wsl --import the bundled Ubuntu 24.04 base rootfs as `aidaptivclaw`.
+        * wsl --import the bundled Ubuntu 24.04 base rootfs as `phison-hybrid-openclaw`.
         * Stage provision.sh / wsl.conf / openclaw-gateway.service /
           openclaw-source.tar.gz into /tmp inside the distro.
         * Run provision.sh as root: apt-installs packages, downloads
@@ -29,10 +29,10 @@
         * Cleanup the Scheduled Task.
 
     Exit codes (consumed by openclaw.iss [Code]):
-        0  success — Phase 1 went through to Phase 2 inline, all good
-        2  reboot required — Phase 1 installed WSL, resume task registered
-        3  prerequisites unmet — VT-x off, unsupported Windows, etc.
-        1  any other failure — see install.log
+        0  success -- Phase 1 went through to Phase 2 inline, all good
+        2  reboot required -- Phase 1 installed WSL, resume task registered
+        3  prerequisites unmet -- VT-x off, unsupported Windows, etc.
+        1  any other failure -- see install.log
 
 .PARAMETER AppDir
     Directory where the installer placed files (Inno Setup {app}).
@@ -57,14 +57,14 @@ $SourceTarball = Join-Path $AppDir "rootfs\openclaw-source.tar.gz"
 $WslConfFile   = Join-Path $AppDir "rootfs\wsl.conf"
 $GatewaySvc    = Join-Path $AppDir "rootfs\openclaw-gateway.service"
 $ProvisionSh   = Join-Path $AppDir "rootfs\provision.sh"
-$DistroName   = "aidaptivclaw"
-$DistroDir    = Join-Path $env:ProgramData "aiDAPTIVClaw\wsl"
+$DistroName   = "phison-hybrid-openclaw"
+$DistroDir    = Join-Path $env:ProgramData "Phison Hybrid OpenClaw\wsl"
 $RunOnceKey  = "HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce"
-$RunOnceName = "aiDAPTIVClawPostInstall"
-$ResumeTaskName = "aiDAPTIVClawPhase2Resume"
+$RunOnceName = "PhisonHybridOpenClawPostInstall"
+$ResumeTaskName = "PhisonHybridOpenClawPhase2Resume"
 # Update this URL when the docs are published. Phase 1/2 dialogs link here
 # for self-service troubleshooting.
-$DocsUrl     = "https://github.com/openclaw/openclaw/blob/main/docs/install/windows.md"
+$DocsUrl     = "https://github.com/aiDAPTIV-Phison/OpenClaw-Integration-with-aiDAPTIV/blob/main/docs/install/windows.md"
 
 function Write-Log {
     param([string]$Message)
@@ -115,7 +115,7 @@ function Show-InfoDialog {
 function Test-VirtualizationEnabled {
     # WSL2 needs CPU virtualization (VT-x / AMD-V). Detection is brittle:
     # `Win32_Processor.VirtualizationFirmwareEnabled` returns False / $null
-    # on many real configurations even when BIOS has it enabled — most
+    # on many real configurations even when BIOS has it enabled -- most
     # commonly when another hypervisor (Hyper-V, HVCI/Memory Integrity,
     # VMware) is already running and the firmware property becomes
     # informational rather than authoritative. We check three signals and
@@ -130,7 +130,7 @@ function Test-VirtualizationEnabled {
         }
     } catch { }
 
-    # Signal 2: A hypervisor is already running. Authoritative — nothing
+    # Signal 2: A hypervisor is already running. Authoritative -- nothing
     # can be running atop the CPU without VT-x being enabled at firmware.
     try {
         $sys = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
@@ -164,7 +164,7 @@ function Test-WindowsVersionOk {
 function Test-WslKernelPresent {
     # Lightweight check: `wsl --status` returns 0 once the kernel binaries
     # have been deployed by `wsl --install`. Does NOT prove the VM service
-    # can start — that requires Test-VmComputeReady below.
+    # can start -- that requires Test-VmComputeReady below.
     Invoke-NativeNoThrow { & wsl.exe --status 2>&1 | Out-Null }
     return ($LASTEXITCODE -eq 0)
 }
@@ -174,7 +174,7 @@ function Test-VmComputeReady {
     # Host Compute Service (`vmcompute`) is the component that backs every
     # WSL2 distro, and `wsl --import` cannot run without it. After a fresh
     # `wsl --install`, the service binaries are on disk but the service
-    # cannot start until Windows reboots — the Hyper-V hypervisor must be
+    # cannot start until Windows reboots -- the Hyper-V hypervisor must be
     # injected into the boot loader at boot time. Without this check we
     # fall through to Phase 2 too early and `wsl --import` blows up with
     # HCS_E_SERVICE_NOT_AVAILABLE.
@@ -208,7 +208,7 @@ function Register-Phase2RunOnce {
     #
     # We DELIBERATELY do NOT use HKCU\RunOnce here. RunOnce-launched
     # processes inherit the user's standard token even when the user is
-    # in the Administrators group — there is no UAC consent prompt and
+    # in the Administrators group -- there is no UAC consent prompt and
     # no automatic elevation. Phase 2 needs admin (Start-Service vmcompute,
     # wsl --import to ProgramData, etc.) so a RunOnce-launched Phase 2
     # immediately fails Test-VmComputeReady with ACCESS_DENIED on
@@ -265,11 +265,11 @@ function Set-WslMirroredNetworking {
     #
     # We persist this in %USERPROFILE%\.wslconfig (the per-user config
     # WSL2 reads at VM start). The merge below preserves any existing
-    # settings the user already had — we only inject networkingMode if
+    # settings the user already had -- we only inject networkingMode if
     # it is missing, and we never overwrite a user's explicit non-mirrored
     # choice (we just log it).
     #
-    # Idempotent — safe to call on every Phase 2 run.
+    # Idempotent -- safe to call on every Phase 2 run.
     $winBuild = 0
     try {
         $winBuild = [int](Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion" CurrentBuildNumber).CurrentBuildNumber
@@ -317,14 +317,14 @@ function Set-WslMirroredNetworking {
 
     if ($netModeAt -ge 0) {
         if ($netModeVal -eq 'mirrored') {
-            Write-Log "WSL .wslconfig already has networkingMode=mirrored — no change"
+            Write-Log "WSL .wslconfig already has networkingMode=mirrored -- no change"
             return
         }
         # User has an explicit non-mirrored setting; respect it. Some users
-        # need NAT for legacy bridge tooling — overwriting silently would
+        # need NAT for legacy bridge tooling -- overwriting silently would
         # break them. Log loudly so the install log records the decision.
         Write-Log "WARN: $wslconfigPath has networkingMode=$netModeVal (not mirrored). Leaving it alone."
-        Write-Log "WARN: aiDAPTIVClaw works either way, but mirrored mode is recommended on Win11 22H2+."
+        Write-Log "WARN: Phison Hybrid Router with aiDAPTIV for OpenClaw works either way, but mirrored mode is recommended on Win11 22H2+."
         Write-Log "WARN: To switch later: edit $wslconfigPath and set [wsl2] networkingMode=mirrored, then 'wsl --shutdown'."
         return
     }
@@ -335,7 +335,7 @@ function Set-WslMirroredNetworking {
     #   (c) no [wsl2] section -> append [wsl2] section at end of file
     if ($lines.Count -eq 0) {
         $newContent = @(
-            '# Auto-generated by aiDAPTIVClaw installer.'
+            '# Auto-generated by Phison Hybrid Router with aiDAPTIV for OpenClaw installer.'
             '# Mirrored networking lets the WSL2 VM share the host''s network'
             '# stack so localhost / IPv6 / VPN routes "just work".'
             '[wsl2]'
@@ -365,7 +365,7 @@ function Set-WslMirroredNetworking {
         return
     }
 
-    # No [wsl2] at all — append a fresh section.
+    # No [wsl2] at all -- append a fresh section.
     $merged = @($lines) + @('', '[wsl2]', 'networkingMode=mirrored', '')
     Set-Content -LiteralPath $wslconfigPath -Value $merged -Encoding UTF8
     Write-Log "Appended [wsl2] networkingMode=mirrored section to $wslconfigPath"
@@ -380,7 +380,7 @@ function Read-InstallOptions {
     # cloud-provider selection (id, baseUrl, api, model, apiKey) which
     # Phase 2 patches into openclaw.json. Falls back to safe defaults
     # if the file is missing (e.g. user ran post-install.ps1 by hand
-    # for retry) — in that case the cloud section is empty and Phase 2
+    # for retry) -- in that case the cloud section is empty and Phase 2
     # leaves the template's defaults untouched.
     #
     # Section format (mirror of openclaw.iss WriteInstallOptions):
@@ -393,11 +393,15 @@ function Read-InstallOptions {
     #                  spawn cmd.exe -- documented sandbox break-out)
     $iniPath = Join-Path $AppDir "install-options.ini"
     $opts = @{
-        AppName         = "aiDAPTIVClaw"
+        # AppName drives the .lnk filename ("$AppName.lnk") below. MUST stay
+        # short ("Phison Hybrid OpenClaw") to match the hard-coded sweep names
+        # in openclaw.iss CurUninstallStepChanged. The long brand name lives
+        # in [Setup] AppName= of the .iss and is shown in ARP / wizard chrome.
+        AppName         = "Phison Hybrid OpenClaw"
         AppDir          = $AppDir
         LauncherPath    = Join-Path $AppDir "openclaw-launcher.vbs"
         IconPath        = Join-Path $AppDir "Gemini_Generated_Image_aiDAPTIV.ico"
-        StartMenuGroup  = Join-Path ([Environment]::GetFolderPath('Programs')) "aiDAPTIVClaw"
+        StartMenuGroup  = Join-Path ([Environment]::GetFolderPath('Programs')) "Phison Hybrid OpenClaw"
         UserDesktop     = [Environment]::GetFolderPath('Desktop')
         Desktop         = $true
         StartMenu       = $true
@@ -500,7 +504,7 @@ function New-LauncherShortcuts {
 
 function Write-InstallCompleteMarker {
     # Marker file consumed by openclaw-launcher.cmd as a defensive sanity
-    # check — if the marker is missing, the launcher refuses to run and
+    # check -- if the marker is missing, the launcher refuses to run and
     # tells the user the install is incomplete. Belt-and-suspenders on
     # top of the "no shortcut without success" invariant: catches the
     # case where a user manually copied a shortcut from somewhere else.
@@ -525,7 +529,7 @@ function Write-InstallCompleteMarker {
 #  The two files are written from the same in-memory object so they
 #  cannot drift. Three patch sites mirror what the original
 #  configure-cloud.cjs did, plus a third patch (agents.defaults) that
-#  the legacy script forgot — without it, picking e.g. Anthropic
+#  the legacy script forgot -- without it, picking e.g. Anthropic
 #  silently still routes the agent's primary model through OpenRouter.
 # ============================================================
 
@@ -562,7 +566,7 @@ function Build-OpenClawConfig {
 
     # Patch 1: insert / update models.providers.<id>. Preserve any pre-
     # existing fields under the same provider key (e.g. an existing
-    # `models: []` array), otherwise default to an empty array — matches
+    # `models: []` array), otherwise default to an empty array -- matches
     # the original configure-cloud.cjs spread-then-overwrite semantics.
     $providers = $tpl.models.providers
     $merged = [ordered]@{}
@@ -598,7 +602,7 @@ function Build-OpenClawConfig {
 }
 
 function Convert-ConfigToJson {
-    # Centralise the depth setting — openclaw.json nests up to ~6 levels
+    # Centralise the depth setting -- openclaw.json nests up to ~6 levels
     # under plugins.entries.hybrid-gateway.config.routing.skillRoutes[].
     # PowerShell's ConvertTo-Json defaults to depth 2 and silently
     # serialises deeper nodes as System.Object[] strings. Lock to 32.
@@ -609,7 +613,7 @@ function Convert-ConfigToJson {
 function Write-WindowsHostConfig {
     # Windows-side copy under %USERPROFILE%\.openclaw\openclaw.json. Kept
     # purely for backward-compat with any future Windows-side CLI/GUI
-    # tool — the gateway running inside WSL does NOT read this. Failure
+    # tool -- the gateway running inside WSL does NOT read this. Failure
     # to write is a warning, not a fatal: gateway operation does not
     # depend on this file.
     param(
@@ -623,7 +627,7 @@ function Write-WindowsHostConfig {
             New-Item -ItemType Directory -Path $configDir -Force | Out-Null
         }
         # -NoNewline: ConvertTo-Json doesn't emit a trailing newline, and
-        # Set-Content default would add CRLF — keep the file LF-clean.
+        # Set-Content default would add CRLF -- keep the file LF-clean.
         Set-Content -LiteralPath $configPath -Value $Json -Encoding UTF8 -NoNewline
         Write-Log "Wrote Windows host config: $configPath ($(($Json).Length) bytes)"
     } catch {
@@ -636,7 +640,7 @@ function Push-WslGuestConfig {
     # %TEMP%\openclaw-config-<guid>.json, translate the path with
     # `wslpath`, then `install` it as openclaw:openclaw mode 0640 in
     # one atomic step (no race where the file briefly exists with
-    # wrong owner / mode). Failure is FATAL — without this file the
+    # wrong owner / mode). Failure is FATAL -- without this file the
     # gateway will boot with no API key and any LLM call fails.
     param(
         [Parameter(Mandatory)] [string]$Json,
@@ -671,7 +675,7 @@ function Push-WslGuestConfig {
         }
         Write-Log "Wrote WSL guest config: /home/openclaw/.openclaw/openclaw.json ($(($Json).Length) bytes, mode 0640, owner openclaw)"
     } finally {
-        # Always wipe the host-side temp copy — it briefly held the
+        # Always wipe the host-side temp copy -- it briefly held the
         # apiKey in plain text under %TEMP%, where corp DLP scanners
         # love to find such strings.
         if (Test-Path $hostTmp) {
@@ -761,17 +765,17 @@ function Invoke-Phase1 {
     # 1. Windows version gate
     if (-not (Test-WindowsVersionOk)) {
         Show-FatalDialog "Unsupported Windows" `
-            ("aiDAPTIVClaw requires Windows 10 22H2 (build 19045) or Windows 11.`n`n" +
+            ("Phison Hybrid Router with aiDAPTIV for OpenClaw requires Windows 10 22H2 (build 19045) or Windows 11.`n`n" +
              "Detected: $([Environment]::OSVersion.Version)`n`n" +
              "Please update Windows and run the installer again.")
         Write-Log "ERROR: Unsupported Windows version: $([Environment]::OSVersion.Version)"
         exit 3
     }
 
-    # 2. CPU virtualization gate (no API can fix this — must be done in BIOS)
+    # 2. CPU virtualization gate (no API can fix this -- must be done in BIOS)
     if (-not (Test-VirtualizationEnabled)) {
         Show-FatalDialog "Virtualization not enabled" `
-            ("aiDAPTIVClaw requires CPU virtualization (Intel VT-x or AMD-V) to be enabled in BIOS.`n`n" +
+            ("Phison Hybrid Router with aiDAPTIV for OpenClaw requires CPU virtualization (Intel VT-x or AMD-V) to be enabled in BIOS.`n`n" +
              "Please reboot, enter BIOS/UEFI setup, and enable:`n" +
              "  - Intel CPU: 'Intel Virtualization Technology' or 'VT-x'`n" +
              "  - AMD CPU:  'SVM Mode' or 'AMD-V'`n`n" +
@@ -782,7 +786,7 @@ function Invoke-Phase1 {
     }
     Write-Log "Virtualization OK"
 
-    # 3. WSL2 readiness check — split into two signals so we can distinguish
+    # 3. WSL2 readiness check -- split into two signals so we can distinguish
     #    (a) genuinely ready -> inline-run Phase 2
     #    (b) kernel present but vmcompute not yet runnable (just installed,
     #        not rebooted) -> register RunOnce + ask for reboot
@@ -798,7 +802,7 @@ function Invoke-Phase1 {
 
     if ($kernelPresent -and -not $vmComputeReady) {
         # Common case after a manual `wsl --install` that hasn't been
-        # followed by a reboot yet. Skip re-installing WSL — just queue
+        # followed by a reboot yet. Skip re-installing WSL -- just queue
         # Phase 2 to run after the reboot completes.
         Write-Log "WSL kernel present but vmcompute not ready -> reboot required to activate Hyper-V"
         Register-Phase2RunOnce
@@ -815,7 +819,7 @@ function Invoke-Phase1 {
         exit 2
     }
 
-    # Case (c): WSL not installed — install it, then ask for reboot.
+    # Case (c): WSL not installed -- install it, then ask for reboot.
     Write-Log "WSL2 not installed; attempting 'wsl --install --no-distribution'"
     Invoke-NativeNoThrow { & wsl.exe --install --no-distribution 2>&1 | Tee-Object -FilePath $LogFile -Append | Out-Null }
     if ($LASTEXITCODE -ne 0) {
@@ -853,7 +857,7 @@ function Invoke-Phase1 {
 
 function Update-WslConfig {
     # Patch %USERPROFILE%\.wslconfig idempotently. vmIdleTimeout=-1 keeps
-    # the sandbox VM alive across user idle so the gateway stays up — and,
+    # the sandbox VM alive across user idle so the gateway stays up -- and,
     # critically here, prevents the long-running provision.sh from being
     # killed mid-build if the user walks away from the keyboard.
     $wslConfigPath = Join-Path $env:USERPROFILE ".wslconfig"
@@ -864,13 +868,13 @@ function Update-WslConfig {
         if ($wslConfigContent.Length -gt 0 -and -not $wslConfigContent.EndsWith("`n")) {
             $wslConfigContent += "`r`n"
         }
-        $wslConfigContent += "`r`n# Added by aiDAPTIVClaw installer: keep sandbox VM alive.`r`n[wsl2]`r`nvmIdleTimeout=-1`r`n"
+        $wslConfigContent += "`r`n# Added by Phison Hybrid Router with aiDAPTIV for OpenClaw installer: keep sandbox VM alive.`r`n[wsl2]`r`nvmIdleTimeout=-1`r`n"
         Set-Content -Path $wslConfigPath -Value $wslConfigContent -Encoding UTF8
         Write-Log ".wslconfig updated"
         # Apply the new config so the next wsl invocation picks it up.
         Invoke-NativeNoThrow { & wsl.exe --shutdown 2>&1 | Out-Null }
     } else {
-        Write-Log ".wslconfig already has vmIdleTimeout — leaving it alone"
+        Write-Log ".wslconfig already has vmIdleTimeout -- leaving it alone"
     }
 }
 
@@ -879,12 +883,12 @@ function Invoke-Phase2 {
 
     # User-visible banner. When Phase 2 is launched by the resume task
     # after a reboot, the user sees a PowerShell window pop up out of
-    # nowhere — make sure they immediately understand WHAT it is, HOW
+    # nowhere -- make sure they immediately understand WHAT it is, HOW
     # LONG it takes, and HOW TO MONITOR it without staring at a blank
     # screen for 25 minutes.
     Write-Host ""
     Write-Host "============================================================" -ForegroundColor Cyan
-    Write-Host "  aiDAPTIVClaw Phase 2: WSL Sandbox Provisioning" -ForegroundColor Cyan
+    Write-Host "  Phison Hybrid Router with aiDAPTIV for OpenClaw Phase 2: WSL Sandbox Provisioning" -ForegroundColor Cyan
     Write-Host "============================================================" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "  This window will:" -ForegroundColor Yellow
@@ -939,7 +943,7 @@ function Invoke-Phase2 {
             Show-FatalDialog "Missing installer file" `
                 ("Required payload file is missing:`n`n" +
                  "  $($r.Name)`n  $($r.Path)`n`n" +
-                 "Please reinstall aiDAPTIVClaw.")
+                 "Please reinstall Phison Hybrid Router with aiDAPTIV for OpenClaw.")
             Unregister-Phase2RunOnce
             exit 1
         }
@@ -994,8 +998,8 @@ function Invoke-Phase2 {
     }
     Write-Log "Importing Ubuntu 24.04 base rootfs as '$DistroName'..."
     # Capture wsl --import output so we can detect HCS_E_SERVICE_NOT_AVAILABLE
-    # — the canonical "WSL was installed but Windows hasn't rebooted yet"
-    # signal — and convert it into a graceful reboot prompt instead of a
+    # -- the canonical "WSL was installed but Windows hasn't rebooted yet"
+    # signal -- and convert it into a graceful reboot prompt instead of a
     # generic "import failed" dead-end.
     $importOutput = Invoke-NativeNoThrow {
         & wsl.exe --import $DistroName $DistroDir $BaseTarball --version 2 2>&1 | Tee-Object -FilePath $LogFile -Append
@@ -1026,7 +1030,7 @@ function Invoke-Phase2 {
     # default automount (/mnt/c) enabled, so we can reach $AppDir from
     # inside the distro by translating with `wslpath -u`. Once provision.sh
     # installs our own wsl.conf with automount=enabled=false, /mnt access
-    # is gone — but by then the staging is already done.
+    # is gone -- but by then the staging is already done.
     Write-Log "Staging payload into distro /tmp/..."
     & wsl.exe -d $DistroName -u root -- mkdir -p /tmp/rootfs-config
     if ($LASTEXITCODE -ne 0) {
@@ -1035,7 +1039,7 @@ function Invoke-Phase2 {
         exit 1
     }
 
-    # Translate Windows paths to WSL paths once — wslpath handles spaces.
+    # Translate Windows paths to WSL paths once -- wslpath handles spaces.
     $wslConfP = (& wsl.exe -d $DistroName -u root -- wslpath -u "$WslConfFile").Trim()
     $svcP     = (& wsl.exe -d $DistroName -u root -- wslpath -u "$GatewaySvc").Trim()
     $provP    = (& wsl.exe -d $DistroName -u root -- wslpath -u "$ProvisionSh").Trim()
@@ -1127,7 +1131,7 @@ sed -i '1i# MODE: STRICT SANDBOX (windowsbridge=0 at install time -- no /mnt/c, 
     # The previous defensive `sed -i 's/\r$//' ...` here was actively
     # HARMFUL: GNU sed BRE treats the `\r` escape as a literal `r`, so
     # the substitution silently stripped the trailing `r` from any line
-    # ending in `r` — corrupting `pnpm build:docker` into
+    # ending in `r` -- corrupting `pnpm build:docker` into
     # `pnpm build:docke` and dead-ending provisioning at step 5/8 with
     # `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL`. We rely on the .gitattributes
     # invariant instead.
@@ -1161,7 +1165,7 @@ sed -i '1i# MODE: STRICT SANDBOX (windowsbridge=0 at install time -- no /mnt/c, 
     # the openclaw user, created by provision.sh step 7) and the
     # Windows host backward-compat location. MUST happen BEFORE the
     # `wsl --terminate` below so when systemd cold-boots the gateway,
-    # the file is already in place — the gateway reads the config at
+    # the file is already in place -- the gateway reads the config at
     # service startup, not on demand. Then strip the apiKey from
     # install-options.ini so it does not sit in plain text in {app}\.
     # $installOpts was loaded earlier (top of Phase 2) so the same
@@ -1202,7 +1206,7 @@ sed -i '1i# MODE: STRICT SANDBOX (windowsbridge=0 at install time -- no /mnt/c, 
     # gateway can see /mnt/c/* and exec cmd.exe, and our isolation
     # promise (Q3=D in the design) is silently broken.
     # `wsl --terminate` is a millisecond-cheap operation; the next
-    # `wsl.exe -d aidaptivclaw ...` call cold-boots the distro and
+    # `wsl.exe -d phison-hybrid-openclaw ...` call cold-boots the distro and
     # picks up the new wsl.conf.
     Write-Log "Terminating distro so wsl.conf takes effect on next launch..."
     Invoke-NativeNoThrow { & wsl.exe --terminate $DistroName 2>&1 | Out-Null }
@@ -1216,8 +1220,8 @@ sed -i '1i# MODE: STRICT SANDBOX (windowsbridge=0 at install time -- no /mnt/c, 
     New-LauncherShortcuts
     Write-InstallCompleteMarker
 
-    Write-Log "Install complete. Click the desktop shortcut to start aiDAPTIVClaw."
-    Write-Log "(A 'aiDAPTIVClaw Gateway' terminal window will open with live logs;"
+    Write-Log "Install complete. Click the desktop shortcut to start Phison Hybrid Router with aiDAPTIV for OpenClaw."
+    Write-Log "(A 'Phison Hybrid OpenClaw Gateway' terminal window will open with live logs;"
     Write-Log " press Ctrl-C in that window to stop the gateway.)"
 
     Unregister-Phase2RunOnce
@@ -1240,8 +1244,8 @@ try {
     # (writes to ProgramData). The Inno Setup installer launches Phase 1
     # already-elevated. Phase 2's scheduled task is registered with
     # RunLevel=Highest so it inherits an elevated token at logon. But if
-    # the user runs the script by hand from a standard shell — or some
-    # corporate policy stripped the task's privilege — we self-elevate
+    # the user runs the script by hand from a standard shell -- or some
+    # corporate policy stripped the task's privilege -- we self-elevate
     # rather than fail with a confusing ACCESS_DENIED later.
     if (-not (Test-IsAdmin)) {
         Write-Log "Not running elevated; relaunching self via UAC (Phase=$Phase)"
@@ -1263,6 +1267,6 @@ try {
     }
 } catch {
     Write-Log "FATAL: $_"
-    Show-FatalDialog "aiDAPTIVClaw setup error" "$_`n`nSee $LogFile for details."
+    Show-FatalDialog "Phison Hybrid OpenClaw setup error" "$_`n`nSee $LogFile for details."
     exit 1
 }

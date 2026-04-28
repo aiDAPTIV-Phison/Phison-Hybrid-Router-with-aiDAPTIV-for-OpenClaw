@@ -1,4 +1,4 @@
-; aiDAPTIVClaw Windows Installer - Inno Setup Script (WSL2 sandbox, Q2=C online build)
+; Phison Hybrid Router with aiDAPTIV for OpenClaw - Inno Setup Script (WSL2 sandbox, Q2=C online build)
 ;
 ; Ships:
 ;   - Canonical's vanilla Ubuntu 24.04 WSL base rootfs (ubuntu-base.tar.gz, ~340 MB)
@@ -7,7 +7,7 @@
 ;   - Windows-side launcher + dual-phase post-install.ps1
 ;
 ; On install, post-install.ps1 (Phase 2) imports the base rootfs as the
-; private WSL distro `aidaptivclaw`, stages the source + configs into
+; private WSL distro `phison-hybrid-openclaw`, stages the source + configs into
 ; /tmp inside the distro, and runs provision.sh as root to apt-install
 ; packages, install Node.js, build OpenClaw, and enable the systemd unit.
 ; Provision time on the customer machine: ~15-30 min, requires internet.
@@ -35,17 +35,31 @@
 ; Distinct AppId from the native flavor -- this lets the WSL build install
 ; in parallel without Windows treating it as an upgrade of the native one
 ; (which would clobber the native uninstall entry). Generated 2026-04-27.
-AppId={{20CB01AE-608C-42D4-AEC4-2951D158C19E}
-AppName=aiDAPTIVClaw (WSL)
+; AppId regenerated 2026-04-28 for the Phison Hybrid Router with aiDAPTIV for
+; OpenClaw rebrand. Treats this as a brand-new product so existing aiDAPTIVClaw
+; installs are NOT touched on upgrade. Customers must manually uninstall the
+; old aiDAPTIVClaw entry from "Programs and Features" if they want to fully
+; migrate.
+;
+; Naming convention (see docs/plans/2026-04-23-wsl-sandbox-design.md):
+;   - Long name "Phison Hybrid Router with aiDAPTIV for OpenClaw" is the
+;     official brand and is used for all wide-display surfaces: wizard pages,
+;     ARP DisplayName, dialog body text.
+;   - Short name "Phison Hybrid OpenClaw" is used where Windows truncates
+;     (terminal title, log prefix, dialog title bars) and for filesystem /
+;     start-menu folder names where deeply-nested paths approach MAX_PATH=260.
+;   - Lowercase identifier "phison-hybrid-openclaw" is the WSL distro name.
+AppId={{C3471C10-DA2F-42B4-968B-2BDF7C19202D}
+AppName=Phison Hybrid Router with aiDAPTIV for OpenClaw
 AppVersion={#AppVersion}
-AppVerName=aiDAPTIVClaw (WSL) {#AppVersion}
+AppVerName=Phison Hybrid Router with aiDAPTIV for OpenClaw {#AppVersion}
 AppPublisher=aiDAPTIV
-AppPublisherURL=https://github.com/openclaw/openclaw
-AppSupportURL=https://github.com/openclaw/openclaw/issues
-DefaultDirName={commonpf}\aiDAPTIVClaw
-DefaultGroupName=aiDAPTIVClaw
+AppPublisherURL=https://github.com/aiDAPTIV-Phison/OpenClaw-Integration-with-aiDAPTIV
+AppSupportURL=https://github.com/aiDAPTIV-Phison/OpenClaw-Integration-with-aiDAPTIV/issues
+DefaultDirName={commonpf}\Phison Hybrid OpenClaw
+DefaultGroupName=Phison Hybrid OpenClaw
 OutputDir=..\output
-OutputBaseFilename=aidaptiv-claw-setup-wsl-{#AppVersion}
+OutputBaseFilename=phison-hybrid-openclaw-setup-wsl-{#AppVersion}
 Compression=lzma2/ultra64
 SolidCompression=yes
 ; Admin required: wsl --install and wsl --import need elevation,
@@ -89,7 +103,7 @@ Name: "windowsbridge"; Description: "Allow OpenClaw to access Windows files and 
 
 [Files]
 ; Canonical Ubuntu 24.04 WSL base rootfs (cached/downloaded by scripts/build-installer.ps1).
-; Imported by post-install.ps1 Phase 2 as the `aidaptivclaw` distro.
+; Imported by post-install.ps1 Phase 2 as the `phison-hybrid-openclaw` distro.
 Source: "rootfs\ubuntu-base.tar.gz"; DestDir: "{app}\rootfs"; Flags: ignoreversion
 
 ; OpenClaw source code packed via `git archive HEAD` at build time.
@@ -102,7 +116,7 @@ Source: "rootfs\wsl.conf"; DestDir: "{app}\rootfs"; Flags: ignoreversion
 Source: "rootfs\openclaw-gateway.service"; DestDir: "{app}\rootfs"; Flags: ignoreversion
 Source: "rootfs\provision.sh"; DestDir: "{app}\rootfs"; Flags: ignoreversion
 
-; PowerShell provisioning orchestrator (runs in two phases — see header).
+; PowerShell provisioning orchestrator (runs in two phases -- see header).
 Source: "post-install.ps1"; DestDir: "{app}"; Flags: ignoreversion
 
 ; Launcher and helpers.
@@ -116,7 +130,7 @@ Source: "post-install.ps1"; DestDir: "{app}"; Flags: ignoreversion
 ; keeps it open. See docs/plans/2026-04-23-wsl-sandbox-design.md.
 Source: "..\shared\openclaw-launcher.vbs"; DestDir: "{app}"; Flags: ignoreversion
 Source: "openclaw-launcher.cmd"; DestDir: "{app}"; Flags: ignoreversion
-; openclaw.json template — patched by post-install.ps1 Phase 2 with the
+; openclaw.json template -- patched by post-install.ps1 Phase 2 with the
 ; user's cloud-provider choice (collected on the wizard's CloudPage and
 ; persisted via install-options.ini), then written to both
 ; %USERPROFILE%\.openclaw\openclaw.json and /home/openclaw/.openclaw/
@@ -126,23 +140,23 @@ Source: "..\shared\Gemini_Generated_Image_aiDAPTIV.ico"; DestDir: "{app}"; Flags
 
 [Icons]
 ; The launcher shortcuts (desktop + Start Menu group) are NOT created
-; here — they are created later by [Code] / post-install.ps1 ONLY after
+; here -- they are created later by [Code] / post-install.ps1 ONLY after
 ; Phase 2 provisioning succeeds and the gateway responds. This keeps
-; the invariant "shortcut on disk = aiDAPTIVClaw is installed and
+; the invariant "shortcut on disk = Phison Hybrid Router with aiDAPTIV for OpenClaw is installed and
 ; usable", so a half-finished install never leaves a misleading icon
 ; that the user might double-click and then see fail.
 ;
-; Only the Uninstall entry is created here — the user must always
+; Only the Uninstall entry is created here -- the user must always
 ; have a way to back out via Start Menu, even from a partial install
 ; (Add/Remove Programs is the other escape hatch, registered by Inno
 ; Setup itself regardless of [Icons]).
-Name: "{group}\Uninstall aiDAPTIVClaw"; Filename: "{uninstallexe}"
+Name: "{group}\Uninstall Phison Hybrid OpenClaw"; Filename: "{uninstallexe}"
 
 [Run]
 ; Optional post-install launch; only runs if WSL setup completed without
 ; needing a reboot (NeedsReboot=False). Otherwise the user reboots and a
 ; scheduled task fires Phase 2 + opens the browser automatically.
-Filename: "{app}\openclaw-launcher.vbs"; Description: "Launch aiDAPTIVClaw"; Flags: nowait postinstall skipifsilent shellexec; Check: NotNeedsReboot
+Filename: "{app}\openclaw-launcher.vbs"; Description: "Launch Phison Hybrid Router with aiDAPTIV for OpenClaw"; Flags: nowait postinstall skipifsilent shellexec; Check: NotNeedsReboot
 
 [UninstallDelete]
 ; Files left around after Phase 2 / runtime that aren't tracked by the installer.
@@ -217,7 +231,7 @@ end;
 function GetProviderDefaultModel(Idx: Integer): String;
 begin
   { Defaults reflect the 2026-04 frontier-tier "fast / cheap" model
-    of each provider — picked to match what most users hitting Next
+    of each provider -- picked to match what most users hitting Next
     twice on the wizard would actually want to run. }
   case Idx of
     0: Result := 'google/gemini-3.1-flash-lite-preview';
@@ -306,7 +320,7 @@ begin
   ApiKeyEdit.Top := ScaleY(124);
   ApiKeyEdit.Left := 0;
   ApiKeyEdit.Width := CloudPage.SurfaceWidth;
-  { Mask the key on screen — it still travels through install-options.ini
+  { Mask the key on screen -- it still travels through install-options.ini
     in plain text (consumed and removed by Phase 2), but no shoulder-surf. }
   ApiKeyEdit.PasswordChar := '*';
   ApiKeyEdit.Text := '';
@@ -331,7 +345,7 @@ begin
   LblSkip.Height := ScaleY(32);
   LblSkip.WordWrap := True;
   LblSkip.Caption :=
-    'Tip: aiDAPTIVClaw will install regardless of what you enter here.' + #13#10 +
+    'Tip: Phison Hybrid Router with aiDAPTIV for OpenClaw will install regardless of what you enter here.' + #13#10 +
     'The key is stored only in the WSL sandbox config, not in the registry.';
   LblSkip.Top := ScaleY(226);
   LblSkip.Left := 0;
@@ -340,7 +354,7 @@ end;
 { --- Create launcher .lnk shortcuts via WScript.Shell COM ---
   Run from CurPageChanged on inline-success path. NeedsReboot path
   defers shortcut creation to post-install.ps1 Phase 2 (post-reboot)
-  so that "shortcut on disk = aiDAPTIVClaw is fully installed" stays
+  so that "shortcut on disk = Phison Hybrid Router with aiDAPTIV for OpenClaw is fully installed" stays
   true regardless of when Phase 2 actually completes. }
 
 procedure CreateLnk(LnkPath, TargetPath, IconPath, WorkDir, Description: String);
@@ -367,8 +381,8 @@ begin
   if WizardIsTaskSelected('desktopicon') then
   begin
     try
-      CreateLnk(ExpandConstant('{userdesktop}\aiDAPTIVClaw.lnk'),
-                LauncherPath, IconPath, AppDir, 'Launch aiDAPTIVClaw');
+      CreateLnk(ExpandConstant('{userdesktop}\Phison Hybrid OpenClaw.lnk'),
+                LauncherPath, IconPath, AppDir, 'Launch Phison Hybrid Router with aiDAPTIV for OpenClaw');
       Log('Created desktop shortcut');
     except
       Log('Failed to create desktop shortcut: ' + GetExceptionMessage);
@@ -381,8 +395,8 @@ begin
     if not DirExists(GroupDir) then
       ForceDirectories(GroupDir);
     try
-      CreateLnk(GroupDir + '\aiDAPTIVClaw.lnk',
-                LauncherPath, IconPath, AppDir, 'Launch aiDAPTIVClaw');
+      CreateLnk(GroupDir + '\Phison Hybrid OpenClaw.lnk',
+                LauncherPath, IconPath, AppDir, 'Launch Phison Hybrid Router with aiDAPTIV for OpenClaw');
       Log('Created Start Menu shortcut');
     except
       Log('Failed to create Start Menu shortcut: ' + GetExceptionMessage);
@@ -428,7 +442,12 @@ begin
     '; deleted by Phase 2 right after consumption so the apiKey does' + #13#10 +
     '; not stay on disk in plain text any longer than necessary.' + #13#10 +
     '[install]' + #13#10 +
-    'appName=aiDAPTIVClaw' + #13#10 +
+    { appName drives the .lnk filename in post-install.ps1 (Phase 2:
+      "$AppName.lnk"). MUST stay short to match the hard-coded sweep
+      names in CurUninstallStepChanged below and to avoid MAX_PATH when
+      nested under deep desktop paths. The long ARP / wizard display
+      name lives in [Setup] AppName= and is independent of this field. }
+    'appName=Phison Hybrid OpenClaw' + #13#10 +
     'appDir=' + AppDir + #13#10 +
     'launcherPath=' + AppDir + '\openclaw-launcher.vbs' + #13#10 +
     'iconPath=' + AppDir + '\Gemini_Generated_Image_aiDAPTIV.ico' + #13#10 +
@@ -476,7 +495,7 @@ begin
   SaveStringToFile(LogFile, 'invocation: powershell.exe ' + Params + #13#10, True);
   SaveStringToFile(LogFile, 'workdir: ' + AppDir + #13#10, True);
 
-  { Persist user's shortcut preferences before Phase 1 — Phase 2 (which
+  { Persist user's shortcut preferences before Phase 1 -- Phase 2 (which
     may run post-reboot, out-of-process) reads this to know which
     shortcuts to create on success. }
   WriteInstallOptions;
@@ -550,23 +569,23 @@ begin
     begin
       WizardForm.FinishedHeadingLabel.Caption := 'Installation Incomplete';
       WizardForm.FinishedLabel.Caption :=
-        'aiDAPTIVClaw files have been extracted, but the WSL sandbox could not be provisioned.' + #13#10 + #13#10 +
+        'Phison Hybrid Router with aiDAPTIV for OpenClaw files have been extracted, but the WSL sandbox could not be provisioned.' + #13#10 + #13#10 +
         'No desktop / Start Menu launcher shortcut was created. The shortcut is added' + #13#10 +
-        'only after a successful install — if you see one, the install is complete.' + #13#10 + #13#10 +
+        'only after a successful install -- if you see one, the install is complete.' + #13#10 + #13#10 +
         'Check the log file for details:' + #13#10 +
         ExpandConstant('{app}\install.log') + #13#10 + #13#10 +
         'You can monitor or tail it live with:' + #13#10 +
         ExpandConstant('  Get-Content "{app}\install.log" -Wait -Tail 50') + #13#10 + #13#10 +
         'You can retry the install from PowerShell:' + #13#10 +
         ExpandConstant('  powershell -File "{app}\post-install.ps1" -AppDir "{app}" -Phase 1') + #13#10 + #13#10 +
-        'Or use Programs and Features > aiDAPTIVClaw to fully remove and start over.';
+        'Or use Programs and Features > Phison Hybrid Router with aiDAPTIV for OpenClaw to fully remove and start over.';
       WizardForm.RunList.Visible := False;
     end
     else if NeedsReboot then
     begin
       WizardForm.FinishedHeadingLabel.Caption := 'Phase 1 of 2 complete -- reboot required';
       WizardForm.FinishedLabel.Caption :=
-        'aiDAPTIVClaw has finished extracting files and configuring WSL.' + #13#10 + #13#10 +
+        'Phison Hybrid Router with aiDAPTIV for OpenClaw has finished extracting files and configuring WSL.' + #13#10 + #13#10 +
         'IMPORTANT: This is only Phase 1. Phase 2 (download Ubuntu base, ' +
         'install Node.js, build OpenClaw -- approximately 15 to 30 minutes) ' +
         'will start AUTOMATICALLY after you reboot Windows and log back in.' + #13#10 + #13#10 +
@@ -574,15 +593,15 @@ begin
         'To monitor live progress, open a separate PowerShell and run:' + #13#10 +
         ExpandConstant('  Get-Content "{app}\install.log" -Wait -Tail 50') + #13#10 + #13#10 +
         'When build completes, your browser will open to the OpenClaw dashboard.' + #13#10 +
-        'A desktop / Start Menu shortcut will appear at that point — its presence' + #13#10 +
-        'is your signal that aiDAPTIVClaw is fully installed and usable.';
+        'A desktop / Start Menu shortcut will appear at that point -- its presence' + #13#10 +
+        'is your signal that Phison Hybrid Router with aiDAPTIV for OpenClaw is fully installed and usable.';
       WizardForm.RunList.Visible := False;
     end
     else
     begin
       { Inline-success path: Phase 1 ran through to Phase 2 in the same
         process and everything is ready. THIS is where the user-facing
-        shortcuts are created — by construction, "shortcut on disk"
+        shortcuts are created -- by construction, "shortcut on disk"
         implies "Phase 2 succeeded". }
       CreateLauncherShortcuts;
       SaveStringToFile(ExpandConstant('{app}\.install-complete'),
@@ -606,6 +625,52 @@ begin
   Result := not NeedsReboot;
 end;
 
+// Sweep a shortcut filename across all candidate locations Windows might
+// have placed it. Defensive against two known issues:
+//
+//   1. PrivilegesRequired=admin: the uninstaller runs elevated. On
+//      multi-account machines, the per-user desktop constant can resolve
+//      to the elevated account's profile rather than the original
+//      interactive user that Phase 2 (Scheduled Task) used to create the
+//      .lnk. Without sweeping both per-user and all-users locations, the
+//      .lnk would survive.
+//
+//   2. Historical: an interim build (2026-04-28 morning, fixed same day)
+//      passed the long brand through $opts.AppName, producing a long-name
+//      .lnk. The uninstaller hard-coded the short-name .lnk, leaving an
+//      orphan. We now sweep BOTH the short and long names so customers
+//      upgrading from that interim build get their desktop cleaned up too.
+//
+// Returns the number of .lnk files actually deleted (for log only).
+// Block-comment delimiters intentionally avoided here: see line ~175.
+function DeleteShortcutEverywhere(LnkName: String): Integer;
+var
+  Candidates: array of String;
+  i: Integer;
+  Path: String;
+begin
+  Result := 0;
+  SetArrayLength(Candidates, 4);
+  Candidates[0] := ExpandConstant('{userdesktop}')   + '\' + LnkName;
+  Candidates[1] := ExpandConstant('{commondesktop}') + '\' + LnkName;
+  Candidates[2] := ExpandConstant('{group}')         + '\' + LnkName;
+  Candidates[3] := ExpandConstant('{commonprograms}') + '\Phison Hybrid OpenClaw\' + LnkName;
+  for i := 0 to GetArrayLength(Candidates) - 1 do
+  begin
+    Path := Candidates[i];
+    if FileExists(Path) then
+    begin
+      if DeleteFile(Path) then
+      begin
+        Result := Result + 1;
+        Log('Uninstall: removed shortcut ' + Path);
+      end
+      else
+        Log('Uninstall: FAILED to remove shortcut (in use or ACL?) ' + Path);
+    end;
+  end;
+end;
+
 { --- Uninstall: tear down the WSL distro --- }
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
@@ -618,36 +683,40 @@ begin
     AppDir := ExpandConstant('{app}');
 
     { Unregister the WSL distro. This destroys the sandbox VM, including
-      everything under /home/openclaw — which is the user's workspace.
+      everything under /home/openclaw -- which is the user's workspace.
       The uninstaller already prompts the user that this is irreversible. }
     Exec(ExpandConstant('{cmd}'),
-         '/C wsl --unregister aidaptivclaw',
+         '/C wsl --unregister phison-hybrid-openclaw',
          AppDir, SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
     { Tear down a pending Phase 2 resume task if a half-finished install
-      left one behind — otherwise the task would fire after uninstall and
+      left one behind -- otherwise the task would fire after uninstall and
       try to invoke a now-deleted post-install.ps1. }
     Exec(ExpandConstant('{cmd}'),
-         '/C schtasks /Delete /TN aiDAPTIVClawPhase2Resume /F',
+         '/C schtasks /Delete /TN PhisonHybridOpenClawPhase2Resume /F',
          AppDir, SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
     { Backwards-compat: also wipe any HKCU RunOnce entry from older
       installer versions that used RunOnce instead of a scheduled task. }
     RegDeleteValue(HKEY_CURRENT_USER,
                    'Software\Microsoft\Windows\CurrentVersion\RunOnce',
-                   'aiDAPTIVClawPostInstall');
+                   'PhisonHybridOpenClawPostInstall');
 
-    { Remove launcher shortcuts that were created dynamically by the
-      Pascal Code section / post-install.ps1 (NOT by the Icons section,
-      so Inno Setup does not track them and would leave them orphaned). }
-    DeleteFile(ExpandConstant('{userdesktop}\aiDAPTIVClaw.lnk'));
-    DeleteFile(ExpandConstant('{group}\aiDAPTIVClaw.lnk'));
+    // Remove launcher shortcuts that were created dynamically by the
+    // Pascal Code section / post-install.ps1 (NOT by the Icons section,
+    // so Inno Setup does not track them and would leave them orphaned).
+    // DeleteShortcutEverywhere also covers stale long-name .lnks from a
+    // buggy 2026-04-28 interim build, and is robust against per-user
+    // desktop constant mis-resolution under elevated uninstall context.
+    DeleteShortcutEverywhere('Phison Hybrid OpenClaw.lnk');
+    DeleteShortcutEverywhere('Phison Hybrid Router with aiDAPTIV for OpenClaw.lnk');
+    DeleteShortcutEverywhere('aiDAPTIVClaw.lnk');
   end;
 
   if CurUninstallStep = usPostUninstall then
   begin
     AppDir := ExpandConstant('{app}');
-    DistroDir := ExpandConstant('{commonappdata}') + '\aiDAPTIVClaw\wsl';
+    DistroDir := ExpandConstant('{commonappdata}') + '\Phison Hybrid OpenClaw\wsl';
 
     { Remove the imported distro directory left behind by wsl --unregister
       (wsl --unregister normally cleans this up, but if the user manually
@@ -663,7 +732,7 @@ begin
     ConfigDir := ExpandConstant('{%USERPROFILE}') + '\.openclaw';
     if DirExists(ConfigDir) then
     begin
-      if MsgBox('Do you want to remove aiDAPTIVClaw configuration files at:' + #13#10 +
+      if MsgBox('Do you want to remove Phison Hybrid Router with aiDAPTIV for OpenClaw configuration files at:' + #13#10 +
                 ConfigDir + #13#10 + #13#10 +
                 'Workspace data inside the WSL sandbox has already been removed.',
                 mbConfirmation, MB_YESNO) = IDYES then

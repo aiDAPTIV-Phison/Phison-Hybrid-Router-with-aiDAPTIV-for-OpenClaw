@@ -1,5 +1,5 @@
 # systemd unit for the OpenClaw gateway running inside the
-# `aidaptivclaw` WSL distro.
+# `phison-hybrid-openclaw` WSL distro.
 #
 # Hardening directives implement the "workspace-writable, system read-only"
 # sandbox model described in

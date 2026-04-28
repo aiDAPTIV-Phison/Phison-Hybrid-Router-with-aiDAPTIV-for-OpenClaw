@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Build the NATIVE-flavor aiDAPTIVClaw Windows installer (.exe) using
+    Build the NATIVE-flavor Phison Hybrid Router with aiDAPTIV for OpenClaw Windows installer (.exe) using
     Inno Setup. Restored from commit 2b0bc718 and adjusted for the
     installer/native/ + installer/shared/ folder split.
 
@@ -15,7 +15,7 @@
     2. Downloads Node.js 24 LTS if not cached (installer/.node-cache/)
     3. Stages source code into installer/native/build/ (excludes node_modules, .git, tests)
     4. Runs Inno Setup against installer/native/openclaw.iss
-    5. Final .exe lands in installer/output/aidaptiv-claw-setup-native-<ver>.exe
+    5. Final .exe lands in installer/output/phison-hybrid-openclaw-setup-native-<ver>.exe
 
 .PARAMETER AppVersion
     Custom version number for the installer. If not specified, reads from package.json.
@@ -54,7 +54,7 @@ if (-not $AppVersion) {
 
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "  aiDAPTIVClaw Installer Builder (NATIVE)"   -ForegroundColor Cyan
+Write-Host "  Phison Hybrid Router with aiDAPTIV for OpenClaw Installer Builder (NATIVE)"  -ForegroundColor Cyan
 Write-Host "  Version: $AppVersion"                      -ForegroundColor Cyan
 Write-Host "  Mode: Online (build on Windows target)"    -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
@@ -198,7 +198,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # --- Done ---
-$OutputExe = Join-Path $OutputDir "aidaptiv-claw-setup-native-$AppVersion.exe"
+$OutputExe = Join-Path $OutputDir "phison-hybrid-openclaw-setup-native-$AppVersion.exe"
 $OutputSize = if (Test-Path $OutputExe) { [math]::Round((Get-Item $OutputExe).Length / 1MB, 1) } else { "?" }
 Write-Host ""
 Write-Host "==========================================" -ForegroundColor Green

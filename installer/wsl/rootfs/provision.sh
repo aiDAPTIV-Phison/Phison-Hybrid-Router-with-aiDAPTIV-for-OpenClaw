@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Provision the `aidaptivclaw` WSL distro on the customer machine.
+# Provision the `phison-hybrid-openclaw` WSL distro on the customer machine.
 # Runs as root inside the customer's freshly-imported Ubuntu 24.04 base
 # rootfs, orchestrated by `installer/post-install.ps1` (Phase 2).
 #
@@ -13,7 +13,7 @@
 #
 # Network: this script REQUIRES internet access (apt, nodejs.org,
 # github.com for pnpm, npm registry). If install fails partway through,
-# post-install.ps1 will `wsl --unregister aidaptivclaw` and the user can
+# post-install.ps1 will `wsl --unregister phison-hybrid-openclaw` and the user can
 # retry once network is restored.
 set -euo pipefail
 
@@ -116,19 +116,19 @@ log "[5/8] Building OpenClaw..."
 SRC_TARBALL="/tmp/openclaw-source.tar.gz"
 SRC_DIR="/tmp/openclaw-src"
 test -f "${SRC_TARBALL}" || {
-    echo "ERROR: ${SRC_TARBALL} missing — orchestrator must stage source first" >&2
+    echo "ERROR: ${SRC_TARBALL} missing -- orchestrator must stage source first" >&2
     exit 1
 }
 mkdir -p "${SRC_DIR}"
 tar -xzf "${SRC_TARBALL}" -C "${SRC_DIR}"
 cd "${SRC_DIR}"
 pnpm install --ignore-scripts
-# Native modules used by OpenClaw — explicit rebuild keeps the install
+# Native modules used by OpenClaw -- explicit rebuild keeps the install
 # step lean (--ignore-scripts above) while still producing working binaries.
 pnpm rebuild esbuild sharp koffi protobufjs
 # Use `pnpm build` (NOT `build:docker`). The `build:docker` variant skips
 # `canvas:a2ui:bundle` because the official Docker build excludes
-# `vendor/` and `apps/` via .dockerignore — there is no a2ui source to
+# `vendor/` and `apps/` via .dockerignore -- there is no a2ui source to
 # compile inside that image. Our installer ships the source via
 # `git archive HEAD` which DOES include vendor/ and apps/, so the
 # bundle step can and must run; otherwise `src/canvas-host/a2ui/
@@ -165,7 +165,7 @@ install -m 0644 /tmp/rootfs-config/openclaw-gateway.service \
 systemctl disable openclaw-gateway.service 2>/dev/null || true
 
 # Foreground launcher wrapper. The Windows-side openclaw-launcher.cmd
-# spawns this via `wsl.exe -d aidaptivclaw -u openclaw -- /opt/openclaw/
+# spawns this via `wsl.exe -d phison-hybrid-openclaw -u openclaw -- /opt/openclaw/
 # run-gateway.sh` inside a Windows Terminal tab, so the user sees stdout
 # / stderr in real time and can Ctrl-C to stop the gateway exactly as
 # they would when running `node openclaw.mjs gateway run` natively.
@@ -176,10 +176,10 @@ systemctl disable openclaw-gateway.service 2>/dev/null || true
 cat > /opt/openclaw/run-gateway.sh <<'GATEWAY_EOF'
 #!/usr/bin/env bash
 # Foreground gateway launcher for the WSL sandbox build.
-# Invoked from Windows: wsl.exe -d aidaptivclaw -u openclaw -- /opt/openclaw/run-gateway.sh
+# Invoked from Windows: wsl.exe -d phison-hybrid-openclaw -u openclaw -- /opt/openclaw/run-gateway.sh
 set -e
-echo "[aiDAPTIVClaw] Starting OpenClaw gateway on http://localhost:18789/"
-echo "[aiDAPTIVClaw] Press Ctrl-C in this window to stop."
+echo "[Phison Hybrid OpenClaw] Starting OpenClaw gateway on http://localhost:18789/"
+echo "[Phison Hybrid OpenClaw] Press Ctrl-C in this window to stop."
 # Echo the active sandbox mode so users see at every launch whether the
 # Windows bridge is open. The first line of /etc/wsl.conf was prepended
 # by post-install.ps1 with `# MODE: STRICT SANDBOX (...)` or
@@ -188,7 +188,7 @@ echo "[aiDAPTIVClaw] Press Ctrl-C in this window to stop."
 # by an older installer), we just stay silent rather than guess.
 mode_line=$(head -1 /etc/wsl.conf 2>/dev/null || true)
 case "${mode_line}" in
-    "# MODE: "*) echo "[aiDAPTIVClaw] ${mode_line#'# '}" ;;
+    "# MODE: "*) echo "[Phison Hybrid OpenClaw] ${mode_line#'# '}" ;;
 esac
 echo ""
 cd "${HOME}"
