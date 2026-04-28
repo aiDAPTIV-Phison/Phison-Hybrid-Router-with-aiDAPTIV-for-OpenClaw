@@ -96,6 +96,12 @@ export type HybridGatewayConfig = {
     fallbackEnabled: boolean;
     /** Regex patterns (case-insensitive). Prompts matching any pattern bypass routing override. */
     bypassPatterns?: string[];
+    /**
+     * Tier to force when a /new or /reset session-startup prompt is detected.
+     * Defaults to "edge". Set to any configured tier (gateway / edge / cloud)
+     * to override.
+     */
+    newSessionTier?: Tier;
   };
   models: {
     gateway: TierModelMapping;

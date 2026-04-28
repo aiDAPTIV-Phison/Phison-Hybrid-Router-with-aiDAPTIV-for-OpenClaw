@@ -10,7 +10,7 @@ User Input
   ▼
 ╔═══════════════════════════════════════════════════════════╗
 ║  Pre-check: New Session / Bypass                          ║
-║  • /new or /reset → force cloud, skip subsequent steps    ║
+║  • /new or /reset → force newSessionTier (default edge)   ║
 ║  • Bypass pattern matched → hand back to OpenClaw default ║
 ╠═══════════════════════════════════════════════════════════╣
 ║  Step 1: CLASSIFY                                         ║
@@ -173,20 +173,60 @@ This is the last line of defense; under normal conditions the model returns corr
 - Cache hit skips the model call
 - Can be disabled in config: `"cacheEnabled": false`
 
-### 3.6 `/new` or `/reset` Forces Cloud on Startup
+### 3.6 `/new` or `/reset` Forces a Configured Tier on Startup
 
-When the prompt contains `"A new session was started via /new or /reset"`, **the classifier and routing engine are skipped and the cloud model is used directly**.
+When the prompt contains `"A new session was started via /new or /reset"`, **the classifier and routing engine are skipped and the configured tier's model is used directly**. The target tier is controlled by `routing.newSessionTier`, which can be `"gateway"`, `"edge"`, or `"cloud"` and **defaults to `"edge"`**.
 
 This behavior is implemented in `index.ts`'s `before_model_resolve` hook, intercepting before the classifier is called.
+
+```json
+"routing": {
+  "newSessionTier": "edge"   // "gateway" | "edge" | "cloud"
+}
+```
 
 ```
 User inputs /new or /reset
   → prompt contains startup message
-  → directly use cloud (config.models.cloud)
-  → reason = "force-cloud (new session startup)"
+  → use config.models[newSessionTier]
+  → reason = "force-<tier> (new session startup)"
 ```
 
-Design rationale: The quality of the first response in a new session significantly affects user experience, so the cloud model is always used.
+**Fail-safe (startup-time static check):** On startup `newSessionTier` is validated; if the value is not a known tier, or the corresponding tier has no `provider`/`model` configured in `config.models`, it automatically falls back to `"edge"` and emits a `warn` log.
+
+> ⚠ **Note: This fail-safe only validates config completeness; it does not check whether the actual service is reachable.** If the selected tier's endpoint goes down at runtime (e.g. llama.cpp not running, cloud API key invalid), this layer cannot detect it. Runtime failure recovery is handled by the OpenClaw host program; see "Advanced: pairing with OpenClaw host fallback" below.
+
+Design rationale: The first response in a new session strongly impacts UX. The default `"edge"` (large local model) balances quality and privacy; switch to `"cloud"` for the highest quality when network is reliable, or `"gateway"` for the fastest fully-local response.
+
+#### Advanced (optional): pairing with OpenClaw host fallback
+
+If you're worried that "the selected tier failing at runtime will simply error out", you can add a fallback chain to `agents.defaults.model.fallbacks`. The OpenClaw host program (`runWithModelFallback`) will try each entry in order when the actual model call fails. A reasonable default is to put "the other two tiers" into fallbacks:
+
+```json
+"agents": {
+  "defaults": {
+    "model": {
+      "primary": "llamacpp/qwen2.5-3b-instruct-q4_k_m",
+      "fallbacks": [
+        "llamacpp-large/gpt-oss-120b-Q4_K_M",
+        "openrouter/google/gemini-2.5-flash"
+      ]
+    }
+  }
+}
+```
+
+| Behavior | Without `fallbacks` | With `fallbacks` |
+| --- | --- | --- |
+| newSessionTier service healthy | Routes to selected tier ✓ | Routes to selected tier ✓ |
+| newSessionTier unreachable at runtime | Host falls back to `primary` model | Host walks down `fallbacks` until one succeeds |
+| All models down | Throws error | Throws error |
+
+**Notes:**
+- This setting is **completely optional**. Things still work without it (just with a less graceful failure response).
+- `fallbacks` references the user's host-level model list and **is not directly coupled to the hybrid-gateway gateway/edge/cloud tier concept** — the host only knows `provider/model` strings, not plugin tiers.
+- This fallback fires **only after a runtime call has failed**; it is not a pre-flight health check, so the **first failure still pays its full timeout cost** before the next candidate is tried.
+- Scope covers all hybrid-gateway routing decisions (not just new session): Stage 2 Policy routing, Skill Route Override, etc.
 
 ### 3.7 Bypass Patterns (Skip Routing)
 
@@ -434,7 +474,8 @@ Below is the config file structure for the three-tier architecture (correspondin
       }
     ],
     "fallbackEnabled": true,
-    "bypassPatterns": []
+    "bypassPatterns": [],
+    "newSessionTier": "edge"
   }
 }
 ```

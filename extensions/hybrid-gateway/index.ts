@@ -3,7 +3,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { createClassifier } from "./classifier.js";
 import { route } from "./router.js";
-import type { HybridGatewayConfig } from "./types.js";
+import type { HybridGatewayConfig, Tier } from "./types.js";
 
 // Minimal plugin API type (avoids importing from openclaw/plugin-sdk which
 // fails when the plugin lives outside the OpenClaw package tree).
@@ -54,6 +54,7 @@ const DEFAULT_CONFIG: HybridGatewayConfig = {
     policy: "cost-optimize-L2",
     skillRoutes: [],
     fallbackEnabled: true,
+    newSessionTier: "edge",
   },
   models: {
     gateway: { provider: "llamacpp", model: "qwen2.5-3b-instruct-q4_k_m" },
@@ -123,9 +124,31 @@ const hybridGatewayPlugin = {
 
     ensureLogDir();
 
+    // Validate newSessionTier is a known tier with a usable provider/model;
+    // otherwise fall back to "edge" so a typo in config never breaks startup.
+    const VALID_TIERS: Tier[] = ["gateway", "edge", "cloud"];
+    const FAILSAFE_TIER: Tier = "edge";
+    let newSessionTier: Tier = config.routing.newSessionTier ?? FAILSAFE_TIER;
+    if (!VALID_TIERS.includes(newSessionTier)) {
+      log.warn(
+        `[hybrid-gw] invalid routing.newSessionTier="${newSessionTier}", falling back to "${FAILSAFE_TIER}"`,
+      );
+      newSessionTier = FAILSAFE_TIER;
+    }
+    if (
+      !config.models[newSessionTier]?.provider ||
+      !config.models[newSessionTier]?.model
+    ) {
+      log.warn(
+        `[hybrid-gw] routing.newSessionTier="${newSessionTier}" has no provider/model configured, falling back to "${FAILSAFE_TIER}"`,
+      );
+      newSessionTier = FAILSAFE_TIER;
+    }
+
     log.info(
       `[hybrid-gw] initializing: policy=${config.routing.policy}, ` +
       `classifier=${config.classifier.mode}, ` +
+      `newSessionTier=${newSessionTier}, ` +
       `gateway=${config.models.gateway.provider}/${config.models.gateway.model}, ` +
       `edge=${config.models.edge.provider}/${config.models.edge.model}, ` +
       `cloud=${config.models.cloud.provider}/${config.models.cloud.model}`,
@@ -141,12 +164,19 @@ const hybridGatewayPlugin = {
       const prompt = event.prompt;
       const t0 = performance.now();
 
-      // /new or /reset startup → force cloud for this request
+      // /new or /reset startup → force the configured tier for this request
       if (prompt?.includes("A new session was started via /new or /reset")) {
-        const cloud = config.models.cloud;
-        log.info(`[hybrid-gw] force-cloud (new session startup) -> ${cloud.provider}/${cloud.model}`);
-        setLastDecision({ tier: "cloud", provider: cloud.provider, model: cloud.model, reason: "force-cloud (new session startup)", ts: Date.now() });
-        return { providerOverride: cloud.provider, modelOverride: cloud.model };
+        const target = config.models[newSessionTier];
+        const reason = `force-${newSessionTier} (new session startup)`;
+        log.info(`[hybrid-gw] ${reason} -> ${target.provider}/${target.model}`);
+        setLastDecision({
+          tier: newSessionTier,
+          provider: target.provider,
+          model: target.model,
+          reason,
+          ts: Date.now(),
+        });
+        return { providerOverride: target.provider, modelOverride: target.model };
       }
 
       if (!prompt?.trim()) return;
