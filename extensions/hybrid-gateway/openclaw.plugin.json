@@ -45,7 +45,7 @@
           "newSessionTier": {
             "type": "string",
             "enum": ["gateway", "edge", "cloud"],
-            "description": "Tier to force when a /new or /reset session-startup prompt is detected. Defaults to \"edge\"."
+            "description": "Tier to force when a /new or /reset session-startup prompt is detected. Defaults to \"cloud\"."
           }
         }
       },

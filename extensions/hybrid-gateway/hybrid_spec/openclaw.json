@@ -112,7 +112,7 @@
               }
             ],
             "fallbackEnabled": true,
-            "newSessionTier": "edge"
+            "newSessionTier": "cloud"
           },
           "models": {
             "gateway": {

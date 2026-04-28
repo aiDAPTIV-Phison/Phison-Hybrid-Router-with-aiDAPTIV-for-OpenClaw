@@ -10,7 +10,7 @@ User Input
   ▼
 ╔═══════════════════════════════════════════════════════════╗
 ║  Pre-check: New Session / Bypass                          ║
-║  • /new 或 /reset → 強制 newSessionTier（預設 edge），跳過後續  ║
+║  • /new 或 /reset → 強制 newSessionTier（預設 cloud），跳過後續 ║
 ║  • Bypass pattern 命中 → 交還 OpenClaw 預設模型              ║
 ╠═══════════════════════════════════════════════════════════╣
 ║  Step 1: CLASSIFY（分類器）                                ║
@@ -175,13 +175,13 @@ Prompt 裡告訴模型可以選的 skill 有這些（與 `classifier-prompt.ts` 
 
 ### 3.6 `/new` 或 `/reset` 啟動時強制路由（可設定）
 
-當 prompt 中包含 `"A new session was started via /new or /reset"` 時，**跳過分類器與路由引擎，直接強制走指定的 tier**。目標 tier 由 `routing.newSessionTier` 設定，可選 `"gateway"`、`"edge"`、`"cloud"`，**預設為 `"edge"`**。
+當 prompt 中包含 `"A new session was started via /new or /reset"` 時，**跳過分類器與路由引擎，直接強制走指定的 tier**。目標 tier 由 `routing.newSessionTier` 設定，可選 `"gateway"`、`"edge"`、`"cloud"`，**預設為 `"cloud"`**。
 
 此行為在 `index.ts` 的 `before_model_resolve` hook 中實作，邏輯在分類器呼叫之前就攔截。
 
 ```json
 "routing": {
-  "newSessionTier": "edge"   // "gateway" | "edge" | "cloud"
+  "newSessionTier": "cloud"   // "gateway" | "edge" | "cloud"
 }
 ```
 
@@ -192,11 +192,11 @@ User 輸入 /new 或 /reset
   → reason = "force-<tier> (new session startup)"
 ```
 
-**Fail-safe（啟動時靜態檢查）：** plugin 啟動時會驗證 `newSessionTier`：若值不是合法 tier，或對應 tier 在 `config.models` 內 `provider`/`model` 未設定，會自動 fallback 成 `"edge"` 並寫一條 `warn` 日誌。
+**Fail-safe（啟動時靜態檢查）：** plugin 啟動時會驗證 `newSessionTier`：若值不是合法 tier，或對應 tier 在 `config.models` 內 `provider`/`model` 未設定，會自動 fallback 成 `"cloud"` 並寫一條 `warn` 日誌。
 
 > ⚠ **注意：此 fail-safe 只檢查設定完整性，不會檢查實際服務是否能連到。** 若選定的 tier 對應的 endpoint runtime 才掛掉（例如 llama.cpp 沒啟動、cloud API key 失效），這層 fail-safe 不會發現。Runtime 失敗的兜底由 OpenClaw 主程式處理，請見下方「進階：搭配 OpenClaw 主程式 fallback」。
 
-設計考量：新 session 的第一次回應品質影響使用體驗。預設使用 `"edge"`（本地大模型）兼顧品質與隱私；網路穩定且追求最佳品質可改 `"cloud"`，純本地最快回應可改 `"gateway"`。
+設計考量：新 session 的第一次回應品質影響使用體驗。預設使用 `"cloud"`（雲端大模型）以追求最佳首句品質與穩定度；對隱私/離線敏感的場景可改 `"edge"`（本地大模型），純本地最快回應可改 `"gateway"`。
 
 #### 進階（可選）：搭配 OpenClaw 主程式 fallback
 
@@ -475,7 +475,7 @@ RoutingDecision:
     ],
     "fallbackEnabled": true,
     "bypassPatterns": [],
-    "newSessionTier": "edge"
+    "newSessionTier": "cloud"
   }
 }
 ```

@@ -10,7 +10,7 @@ User Input
   ▼
 ╔═══════════════════════════════════════════════════════════╗
 ║  Pre-check: New Session / Bypass                          ║
-║  • /new or /reset → force newSessionTier (default edge)   ║
+║  • /new or /reset → force newSessionTier (default cloud)  ║
 ║  • Bypass pattern matched → hand back to OpenClaw default ║
 ╠═══════════════════════════════════════════════════════════╣
 ║  Step 1: CLASSIFY                                         ║
@@ -175,13 +175,13 @@ This is the last line of defense; under normal conditions the model returns corr
 
 ### 3.6 `/new` or `/reset` Forces a Configured Tier on Startup
 
-When the prompt contains `"A new session was started via /new or /reset"`, **the classifier and routing engine are skipped and the configured tier's model is used directly**. The target tier is controlled by `routing.newSessionTier`, which can be `"gateway"`, `"edge"`, or `"cloud"` and **defaults to `"edge"`**.
+When the prompt contains `"A new session was started via /new or /reset"`, **the classifier and routing engine are skipped and the configured tier's model is used directly**. The target tier is controlled by `routing.newSessionTier`, which can be `"gateway"`, `"edge"`, or `"cloud"` and **defaults to `"cloud"`**.
 
 This behavior is implemented in `index.ts`'s `before_model_resolve` hook, intercepting before the classifier is called.
 
 ```json
 "routing": {
-  "newSessionTier": "edge"   // "gateway" | "edge" | "cloud"
+  "newSessionTier": "cloud"   // "gateway" | "edge" | "cloud"
 }
 ```
 
@@ -192,11 +192,11 @@ User inputs /new or /reset
   → reason = "force-<tier> (new session startup)"
 ```
 
-**Fail-safe (startup-time static check):** On startup `newSessionTier` is validated; if the value is not a known tier, or the corresponding tier has no `provider`/`model` configured in `config.models`, it automatically falls back to `"edge"` and emits a `warn` log.
+**Fail-safe (startup-time static check):** On startup `newSessionTier` is validated; if the value is not a known tier, or the corresponding tier has no `provider`/`model` configured in `config.models`, it automatically falls back to `"cloud"` and emits a `warn` log.
 
 > ⚠ **Note: This fail-safe only validates config completeness; it does not check whether the actual service is reachable.** If the selected tier's endpoint goes down at runtime (e.g. llama.cpp not running, cloud API key invalid), this layer cannot detect it. Runtime failure recovery is handled by the OpenClaw host program; see "Advanced: pairing with OpenClaw host fallback" below.
 
-Design rationale: The first response in a new session strongly impacts UX. The default `"edge"` (large local model) balances quality and privacy; switch to `"cloud"` for the highest quality when network is reliable, or `"gateway"` for the fastest fully-local response.
+Design rationale: The first response in a new session strongly impacts UX. The default `"cloud"` (cloud large model) prioritizes the best first-response quality and stability; switch to `"edge"` (large local model) for privacy/offline-sensitive deployments, or `"gateway"` for the fastest fully-local response.
 
 #### Advanced (optional): pairing with OpenClaw host fallback
 
@@ -475,7 +475,7 @@ Below is the config file structure for the three-tier architecture (correspondin
     ],
     "fallbackEnabled": true,
     "bypassPatterns": [],
-    "newSessionTier": "edge"
+    "newSessionTier": "cloud"
   }
 }
 ```

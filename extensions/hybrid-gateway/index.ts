@@ -54,7 +54,7 @@ const DEFAULT_CONFIG: HybridGatewayConfig = {
     policy: "cost-optimize-L2",
     skillRoutes: [],
     fallbackEnabled: true,
-    newSessionTier: "edge",
+    newSessionTier: "cloud",
   },
   models: {
     gateway: { provider: "llamacpp", model: "qwen2.5-3b-instruct-q4_k_m" },
@@ -125,9 +125,9 @@ const hybridGatewayPlugin = {
     ensureLogDir();
 
     // Validate newSessionTier is a known tier with a usable provider/model;
-    // otherwise fall back to "edge" so a typo in config never breaks startup.
+    // otherwise fall back to "cloud" so a typo in config never breaks startup.
     const VALID_TIERS: Tier[] = ["gateway", "edge", "cloud"];
-    const FAILSAFE_TIER: Tier = "edge";
+    const FAILSAFE_TIER: Tier = "cloud";
     let newSessionTier: Tier = config.routing.newSessionTier ?? FAILSAFE_TIER;
     if (!VALID_TIERS.includes(newSessionTier)) {
       log.warn(
