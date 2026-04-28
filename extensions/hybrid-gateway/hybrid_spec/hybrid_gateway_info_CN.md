@@ -10,7 +10,7 @@ User Input
   ▼
 ╔═══════════════════════════════════════════════════════════╗
 ║  Pre-check: New Session / Bypass                          ║
-║  • /new 或 /reset → 強制 cloud，跳過後續                    ║
+║  • /new 或 /reset → 強制 newSessionTier（預設 cloud），跳過後續 ║
 ║  • Bypass pattern 命中 → 交還 OpenClaw 預設模型              ║
 ╠═══════════════════════════════════════════════════════════╣
 ║  Step 1: CLASSIFY（分類器）                                ║
@@ -173,20 +173,60 @@ Prompt 裡告訴模型可以選的 skill 有這些（與 `classifier-prompt.ts` 
 - 命中 cache 時跳過模型呼叫
 - 可在設定檔關閉：`"cacheEnabled": false`
 
-### 3.6 `/new` 或 `/reset` 啟動時強制上雲
+### 3.6 `/new` 或 `/reset` 啟動時強制路由（可設定）
 
-當 prompt 中包含 `"A new session was started via /new or /reset"` 時，**跳過分類器與路由引擎，直接強制走 cloud 模型**。
+當 prompt 中包含 `"A new session was started via /new or /reset"` 時，**跳過分類器與路由引擎，直接強制走指定的 tier**。目標 tier 由 `routing.newSessionTier` 設定，可選 `"gateway"`、`"edge"`、`"cloud"`，**預設為 `"cloud"`**。
 
 此行為在 `index.ts` 的 `before_model_resolve` hook 中實作，邏輯在分類器呼叫之前就攔截。
+
+```json
+"routing": {
+  "newSessionTier": "cloud"   // "gateway" | "edge" | "cloud"
+}
+```
 
 ```
 User 輸入 /new 或 /reset
   → prompt 包含啟動訊息
-  → 直接走 cloud（config.models.cloud）
-  → reason = "force-cloud (new session startup)"
+  → 走 config.models[newSessionTier]
+  → reason = "force-<tier> (new session startup)"
 ```
 
-設計考量：新 session 的第一次回應品質影響使用體驗，因此一律用雲端模型。
+**Fail-safe（啟動時靜態檢查）：** plugin 啟動時會驗證 `newSessionTier`：若值不是合法 tier，或對應 tier 在 `config.models` 內 `provider`/`model` 未設定，會自動 fallback 成 `"cloud"` 並寫一條 `warn` 日誌。
+
+> ⚠ **注意：此 fail-safe 只檢查設定完整性，不會檢查實際服務是否能連到。** 若選定的 tier 對應的 endpoint runtime 才掛掉（例如 llama.cpp 沒啟動、cloud API key 失效），這層 fail-safe 不會發現。Runtime 失敗的兜底由 OpenClaw 主程式處理，請見下方「進階：搭配 OpenClaw 主程式 fallback」。
+
+設計考量：新 session 的第一次回應品質影響使用體驗。預設使用 `"cloud"`（雲端大模型）以追求最佳首句品質與穩定度；對隱私/離線敏感的場景可改 `"edge"`（本地大模型），純本地最快回應可改 `"gateway"`。
+
+#### 進階（可選）：搭配 OpenClaw 主程式 fallback
+
+如果擔心「選定的 tier runtime 失敗會直接報錯」，可以在 `agents.defaults.model.fallbacks` 補上一條 fallback 鏈，OpenClaw 主程式（`runWithModelFallback`）會在實際 model call 失敗時依序嘗試。建議把「除了 newSessionTier 之外的另兩個 tier」放進 fallbacks：
+
+```json
+"agents": {
+  "defaults": {
+    "model": {
+      "primary": "llamacpp/qwen2.5-3b-instruct-q4_k_m",
+      "fallbacks": [
+        "llamacpp-large/gpt-oss-120b-Q4_K_M",
+        "openrouter/google/gemini-2.5-flash"
+      ]
+    }
+  }
+}
+```
+
+| 行為差異 | 沒設 `fallbacks` | 有設 `fallbacks` |
+| --- | --- | --- |
+| newSessionTier 服務正常 | 走指定 tier ✓ | 走指定 tier ✓ |
+| newSessionTier runtime 連不上 | 主程式 fallback 到 `primary` 模型 | 主程式依 fallbacks 順序試到 work 為止 |
+| 全部模型都掛 | 拋錯 | 拋錯 |
+
+**注意：**
+- 此設定**完全不強制**。不設也能跑（只是失敗回應比較不友善）。
+- fallbacks 用的是 user 在主程式定義的列表，**與 hybrid-gateway 的 gateway/edge/cloud 三 tier 概念無直接耦合**——主程式不知道 plugin tier，只認 `provider/model` 字串。
+- 此 fallback 是「runtime call failed 之後才觸發」的，不是預先 health check，所以**第一次失敗仍會付出該次 timeout 成本**才開始嘗試下一個。
+- 適用範圍涵蓋所有 hybrid-gateway 的路由決策（不只 new session），包含 Stage 2 Policy 路由、Skill Route Override 等。
 
 ### 3.7 Bypass Patterns（繞過路由）
 
@@ -434,7 +474,8 @@ RoutingDecision:
       }
     ],
     "fallbackEnabled": true,
-    "bypassPatterns": []
+    "bypassPatterns": [],
+    "newSessionTier": "cloud"
   }
 }
 ```
