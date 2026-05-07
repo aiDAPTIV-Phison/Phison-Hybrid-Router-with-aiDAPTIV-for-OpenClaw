@@ -201,6 +201,36 @@ exec /opt/node/bin/node /opt/openclaw/openclaw.mjs gateway run \
 GATEWAY_EOF
 chmod 0755 /opt/openclaw/run-gateway.sh
 
+# Install a thin `openclaw` CLI wrapper into /usr/local/bin so users can
+# run `openclaw <command>` (e.g. `openclaw status`, `openclaw dashboard`,
+# `openclaw plugins ...`) directly inside the distro -- mirrors the
+# native installer's `pnpm link --global` behavior without dragging in
+# a writable global pnpm store. The wrapper just execs the bundled
+# node against /opt/openclaw/openclaw.mjs and forwards all args.
+#
+# We deliberately do NOT use `pnpm link --global` here:
+#   * /opt/openclaw is mode a-w in step 6 below, which would break
+#     pnpm's expectation of a writable project root.
+#   * pnpm link writes into ~/.local/share/pnpm and depends on the
+#     openclaw user's per-home pnpm state -- a single root-owned
+#     wrapper in /usr/local/bin is simpler and survives `pnpm store
+#     prune`.
+#
+# /usr/local/bin is on the default PATH for both interactive and
+# non-interactive shells (login, ssh -c, wsl.exe -- ... invocations),
+# so this works the same way as the native CLI on a built-from-source
+# install.
+log "[6/8] Installing /usr/local/bin/openclaw CLI wrapper..."
+install -m 0755 /dev/stdin /usr/local/bin/openclaw <<'CLI_EOF'
+#!/usr/bin/env bash
+# OpenClaw CLI wrapper for the WSL sandbox build. Provided so users
+# can run `openclaw <command>` inside the distro without typing the
+# full `/opt/node/bin/node /opt/openclaw/openclaw.mjs ...` path.
+# Mirrors the global `openclaw` shim that `pnpm link --global` would
+# install on a native build.
+exec /opt/node/bin/node /opt/openclaw/openclaw.mjs "$@"
+CLI_EOF
+
 # Lock down the install dir as a substitute for the (now-disabled)
 # systemd unit's ProtectSystem=strict + ProtectHome=read-only +
 # ReadWritePaths= filesystem isolation.
@@ -260,6 +290,64 @@ install -d -m 0755 -o openclaw -g openclaw \
     /home/openclaw/workspace \
     /home/openclaw/.openclaw \
     /home/openclaw/readonly
+
+# 7.5 Install wsl-binfmt-fix.service.
+#
+# Problem: this distro uses an Ubuntu 24.04 *cloud* rootfs (ubuntu-base),
+# NOT the Microsoft Store WSL distro.  The Store variant ships a small
+# helper that reliably re-registers the WSLInterop binfmt handler on
+# every boot; the cloud rootfs does not.  The net effect is that after
+# certain session-lifecycle sequences (e.g. wsl.exe single-command
+# invocation followed by an interactive login) the WSLInterop entry in
+# /proc/sys/fs/binfmt_misc disappears.  Any attempt to exec a Windows
+# .exe (cmd.exe, powershell.exe, schtasks.exe …) then fails with
+# "Exec format error" because the kernel falls back to /bin/sh, which
+# tries to interpret the PE MZ header as a shell script.
+#
+# The systemd drop-in at
+#   /usr/lib/systemd/system/systemd-binfmt.service.d/wsl.conf
+# intentionally adds ConditionVirtualization=!wsl to prevent
+# systemd-binfmt from running (it would overwrite WSLInterop with a
+# version lacking the F flag).  So we cannot rely on systemd-binfmt to
+# fix this for us.
+#
+# Fix: install a lightweight oneshot unit that runs After=local-fs.target
+# and registers WSLInterop only when it is absent.  The
+# ConditionPathExists=!/proc/sys/fs/binfmt_misc/WSLInterop guard makes
+# the unit a no-op whenever /init already registered the handler, so
+# there is no conflict with the normal boot path.
+log "[7/8] Installing wsl-binfmt-fix.service..."
+cat > /etc/systemd/system/wsl-binfmt-fix.service <<'BINFMT_EOF'
+[Unit]
+Description=Ensure WSLInterop binfmt handler is registered
+# binfmt_misc pseudo-fs is mounted by local-fs.target; we must run after it.
+After=local-fs.target
+# Only needed when running under WSL2 (the kernel command line carries
+# WSL_ROOT_INIT=1 and the WSL2 hypervisor is present).
+ConditionVirtualization=microsoft
+# /init is the WSL2 bootstrap binary that owns the binfmt interpreter path.
+# If it is absent something is deeply wrong -- skip rather than fail.
+ConditionPathExists=/init
+# Skip if /init already registered the handler during early boot.
+ConditionPathExists=!/proc/sys/fs/binfmt_misc/WSLInterop
+
+[Service]
+Type=oneshot
+# Register WSLInterop with flags P (preserve argv[0]) and F (fix binary --
+# open the interpreter fd before execve so the handler works even when the
+# filesystem is mounted with noexec or when the calling process has
+# reduced capabilities).  This matches the flags used by /init itself.
+ExecStart=/bin/sh -c \
+    'echo ":WSLInterop:M::MZ::/init:PF" \
+        > /proc/sys/fs/binfmt_misc/register'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+BINFMT_EOF
+
+systemctl daemon-reload
+systemctl enable wsl-binfmt-fix.service
 
 # 8. Shrink the distro. apt caches and build tooling are not needed at
 #    runtime and add ~150MB. We keep the customer's distro small even

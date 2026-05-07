@@ -120,7 +120,8 @@
                 "reason": "Image generation requires cloud model with multimodal capabilities"
               }
             ],
-            "fallbackEnabled": true
+            "fallbackEnabled": true,
+            "newSessionTier": "cloud"
           },
           "models": {
             "gateway": {
