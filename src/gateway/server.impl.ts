@@ -591,6 +591,7 @@ export async function startGatewayServer(
     broadcast,
     broadcastToConnIds,
     agentRunSeq,
+    agentBusSeq,
     dedupe,
     chatRunState,
     chatRunBuffers,
@@ -720,6 +721,7 @@ export async function startGatewayServer(
       chatDeltaSentAt,
       removeChatRun,
       agentRunSeq,
+      agentBusSeq,
       nodeSendToSession,
       ...(typeof cfgAtStart.media?.ttlHours === "number"
         ? { mediaCleanupTtlMs: resolveMediaCleanupTtlMs(cfgAtStart.media.ttlHours) }
@@ -734,7 +736,7 @@ export async function startGatewayServer(
           broadcast,
           broadcastToConnIds,
           nodeSendToSession,
-          agentRunSeq,
+          agentBusSeq,
           chatRunState,
           resolveSessionKeyForRun,
           clearAgentRunContext,

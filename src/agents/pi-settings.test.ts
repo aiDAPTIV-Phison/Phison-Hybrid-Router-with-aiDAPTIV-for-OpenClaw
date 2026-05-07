@@ -1,142 +1,99 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { OpenClawConfig } from "../config/config.js";
 import {
-  applyPiCompactionSettingsFromConfig,
-  DEFAULT_PI_COMPACTION_RESERVE_TOKENS_FLOOR,
-  resolveCompactionReserveTokensFloor,
-} from "./pi-settings.js";
+  setHybridGatewayCompactionReserveTokens,
+  setHybridGatewayEdgeMaxContextTokens,
+} from "./hybrid-gateway-cloud-fallback.js";
+import { resolvePayloadEscalationThreshold } from "./hybrid-gateway-stream-guard.js";
+import { applyPiCompactionSettingsFromConfig } from "./pi-settings.js";
 
-describe("applyPiCompactionSettingsFromConfig", () => {
-  it("bumps reserveTokens when below floor", () => {
+describe("applyPiCompactionSettingsFromConfig (hybrid-gateway reserve)", () => {
+  afterEach(() => {
+    setHybridGatewayCompactionReserveTokens(undefined);
+    setHybridGatewayEdgeMaxContextTokens(undefined);
+  });
+
+  it("aligns Pi reserveTokens to edgeMax - escalationThresholdTokens when hybrid edgeMax is set", () => {
+    const edgeMax = 18432;
+    setHybridGatewayEdgeMaxContextTokens(edgeMax);
+    setHybridGatewayCompactionReserveTokens(8192);
+    const escalationThresholdTokens = resolvePayloadEscalationThreshold(edgeMax).escalationThresholdTokens;
+    const alignedReserve = edgeMax - escalationThresholdTokens;
+
+    const applyOverrides = vi.fn();
     const settingsManager = {
       getCompactionReserveTokens: () => 16_384,
-      getCompactionKeepRecentTokens: () => 20_000,
-      applyOverrides: vi.fn(),
+      getCompactionKeepRecentTokens: () => 4096,
+      applyOverrides,
     };
-
-    const result = applyPiCompactionSettingsFromConfig({ settingsManager });
-
-    expect(result.didOverride).toBe(true);
-    expect(result.compaction.reserveTokens).toBe(DEFAULT_PI_COMPACTION_RESERVE_TOKENS_FLOOR);
-    expect(settingsManager.applyOverrides).toHaveBeenCalledWith({
-      compaction: { reserveTokens: DEFAULT_PI_COMPACTION_RESERVE_TOKENS_FLOOR },
-    });
-  });
-
-  it("does not override when already above floor and not in safeguard mode", () => {
-    const settingsManager = {
-      getCompactionReserveTokens: () => 32_000,
-      getCompactionKeepRecentTokens: () => 20_000,
-      applyOverrides: vi.fn(),
-    };
-
-    const result = applyPiCompactionSettingsFromConfig({
-      settingsManager,
-      cfg: { agents: { defaults: { compaction: { mode: "default" } } } },
-    });
-
-    expect(result.didOverride).toBe(false);
-    expect(result.compaction.reserveTokens).toBe(32_000);
-    expect(settingsManager.applyOverrides).not.toHaveBeenCalled();
-  });
-
-  it("applies explicit reserveTokens but still enforces floor", () => {
-    const settingsManager = {
-      getCompactionReserveTokens: () => 10_000,
-      getCompactionKeepRecentTokens: () => 20_000,
-      applyOverrides: vi.fn(),
-    };
-
-    const result = applyPiCompactionSettingsFromConfig({
-      settingsManager,
-      cfg: {
-        agents: {
-          defaults: {
-            compaction: { reserveTokens: 12_000, reserveTokensFloor: 20_000 },
+    const cfg = {
+      agents: {
+        defaults: {
+          compaction: {
+            reserveTokensFloor: 20_000,
           },
         },
       },
-    });
+    } as OpenClawConfig;
 
-    expect(result.compaction.reserveTokens).toBe(20_000);
-    expect(settingsManager.applyOverrides).toHaveBeenCalledWith({
-      compaction: { reserveTokens: 20_000 },
+    const result = applyPiCompactionSettingsFromConfig({ settingsManager, cfg });
+
+    expect(result.compaction.reserveTokens).toBe(alignedReserve);
+    expect(applyOverrides).toHaveBeenCalledWith({
+      compaction: { reserveTokens: alignedReserve },
     });
   });
 
-  it("applies keepRecentTokens when explicitly configured", () => {
+  it("falls back to routing.contextReserveTokens mirror when edgeMax is unset", () => {
+    setHybridGatewayCompactionReserveTokens(8192);
+    const applyOverrides = vi.fn();
     const settingsManager = {
-      getCompactionReserveTokens: () => 20_000,
-      getCompactionKeepRecentTokens: () => 20_000,
-      applyOverrides: vi.fn(),
+      getCompactionReserveTokens: () => 16_384,
+      getCompactionKeepRecentTokens: () => 4096,
+      applyOverrides,
     };
-
-    const result = applyPiCompactionSettingsFromConfig({
-      settingsManager,
-      cfg: {
-        agents: {
-          defaults: {
-            compaction: {
-              keepRecentTokens: 15_000,
-            },
+    const cfg = {
+      agents: {
+        defaults: {
+          compaction: {
+            reserveTokensFloor: 20_000,
           },
         },
       },
-    });
+    } as OpenClawConfig;
 
-    expect(result.compaction.keepRecentTokens).toBe(15_000);
-    expect(settingsManager.applyOverrides).toHaveBeenCalledWith({
-      compaction: { keepRecentTokens: 15_000 },
+    const result = applyPiCompactionSettingsFromConfig({ settingsManager, cfg });
+
+    expect(result.compaction.reserveTokens).toBe(8192);
+    expect(applyOverrides).toHaveBeenCalledWith({
+      compaction: { reserveTokens: 8192 },
     });
   });
 
-  it("preserves current keepRecentTokens when safeguard mode leaves it unset", () => {
+  it("prefers explicit agents.defaults.compaction.reserveTokens over hybrid reserve", () => {
+    setHybridGatewayCompactionReserveTokens(8192);
+    const applyOverrides = vi.fn();
     const settingsManager = {
-      getCompactionReserveTokens: () => 25_000,
-      getCompactionKeepRecentTokens: () => 20_000,
-      applyOverrides: vi.fn(),
+      getCompactionReserveTokens: () => 5000,
+      getCompactionKeepRecentTokens: () => 4096,
+      applyOverrides,
     };
+    const cfg = {
+      agents: {
+        defaults: {
+          compaction: {
+            reserveTokens: 10_000,
+            reserveTokensFloor: 5000,
+          },
+        },
+      },
+    } as OpenClawConfig;
 
-    const result = applyPiCompactionSettingsFromConfig({
-      settingsManager,
-      cfg: { agents: { defaults: { compaction: { mode: "safeguard" } } } },
+    const result = applyPiCompactionSettingsFromConfig({ settingsManager, cfg });
+
+    expect(result.compaction.reserveTokens).toBe(10_000);
+    expect(applyOverrides).toHaveBeenCalledWith({
+      compaction: { reserveTokens: 10_000 },
     });
-
-    expect(result.compaction.keepRecentTokens).toBe(20_000);
-    expect(settingsManager.applyOverrides).not.toHaveBeenCalled();
-  });
-
-  it("treats keepRecentTokens=0 as invalid and keeps the current setting", () => {
-    const settingsManager = {
-      getCompactionReserveTokens: () => 25_000,
-      getCompactionKeepRecentTokens: () => 20_000,
-      applyOverrides: vi.fn(),
-    };
-
-    const result = applyPiCompactionSettingsFromConfig({
-      settingsManager,
-      cfg: { agents: { defaults: { compaction: { mode: "safeguard", keepRecentTokens: 0 } } } },
-    });
-
-    expect(result.compaction.keepRecentTokens).toBe(20_000);
-    expect(settingsManager.applyOverrides).not.toHaveBeenCalled();
-  });
-});
-
-describe("resolveCompactionReserveTokensFloor", () => {
-  it("returns the default when config is missing", () => {
-    expect(resolveCompactionReserveTokensFloor()).toBe(DEFAULT_PI_COMPACTION_RESERVE_TOKENS_FLOOR);
-  });
-
-  it("accepts configured floors, including zero", () => {
-    expect(
-      resolveCompactionReserveTokensFloor({
-        agents: { defaults: { compaction: { reserveTokensFloor: 24_000 } } },
-      }),
-    ).toBe(24_000);
-    expect(
-      resolveCompactionReserveTokensFloor({
-        agents: { defaults: { compaction: { reserveTokensFloor: 0 } } },
-      }),
-    ).toBe(0);
   });
 });

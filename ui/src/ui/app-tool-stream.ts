@@ -251,6 +251,8 @@ export type CompactionStatus = {
   active: boolean;
   startedAt: number | null;
   completedAt: number | null;
+  /** Set when compaction did not complete normally (e.g. wait timeout). */
+  error?: string;
 };
 
 export type FallbackStatus = {
@@ -271,6 +273,7 @@ type CompactionHost = ToolStreamHost & {
 };
 
 const COMPACTION_TOAST_DURATION_MS = 5000;
+const COMPACTION_ERROR_TOAST_DURATION_MS = 14_000;
 const FALLBACK_TOAST_DURATION_MS = 8000;
 
 export function handleCompactionEvent(host: CompactionHost, payload: AgentEventPayload) {
@@ -288,18 +291,66 @@ export function handleCompactionEvent(host: CompactionHost, payload: AgentEventP
       active: true,
       startedAt: Date.now(),
       completedAt: null,
+      error: undefined,
     };
   } else if (phase === "end") {
+    const willRetry = Boolean(data.willRetry);
+    if (willRetry) {
+      // Mid-flight: compaction finished but LLM will retry — keep "Compacting" until final end.
+      host.compactionStatus = {
+        active: true,
+        startedAt: host.compactionStatus?.startedAt ?? Date.now(),
+        completedAt: null,
+        error: undefined,
+      };
+      return;
+    }
+    const timedOut = Boolean(data.timedOut);
+    if (timedOut) {
+      const msg =
+        typeof data.message === "string" && data.message.trim()
+          ? data.message.trim()
+          : "Compaction wait timed out; continuing with earlier context.";
+      host.compactionStatus = {
+        active: false,
+        startedAt: host.compactionStatus?.startedAt ?? null,
+        completedAt: Date.now(),
+        error: msg,
+      };
+      host.compactionClearTimer = window.setTimeout(() => {
+        host.compactionStatus = null;
+        host.compactionClearTimer = null;
+      }, COMPACTION_ERROR_TOAST_DURATION_MS);
+      return;
+    }
     host.compactionStatus = {
       active: false,
       startedAt: host.compactionStatus?.startedAt ?? null,
       completedAt: Date.now(),
+      error: undefined,
     };
     // Auto-clear the toast after duration
     host.compactionClearTimer = window.setTimeout(() => {
       host.compactionStatus = null;
       host.compactionClearTimer = null;
     }, COMPACTION_TOAST_DURATION_MS);
+  } else if (phase === "timeout" || phase === "error") {
+    const msg =
+      typeof data.message === "string" && data.message.trim()
+        ? data.message.trim()
+        : phase === "timeout"
+          ? "Compaction wait timed out; continuing with earlier context."
+          : "Compaction failed.";
+    host.compactionStatus = {
+      active: false,
+      startedAt: host.compactionStatus?.startedAt ?? null,
+      completedAt: Date.now(),
+      error: msg,
+    };
+    host.compactionClearTimer = window.setTimeout(() => {
+      host.compactionStatus = null;
+      host.compactionClearTimer = null;
+    }, COMPACTION_ERROR_TOAST_DURATION_MS);
   }
 }
 
@@ -328,6 +379,33 @@ function resolveAcceptedSession(
     return { accepted: false };
   }
   return { accepted: true, sessionKey };
+}
+
+/**
+ * `chat.send` stores the client idempotency key as `chatRunId`, but the agent bus may
+ * use a different engine `runId` (e.g. hybrid gateway cloud continuation). `chat` events
+ * can re-key via `handleChatEvent` — mirror that here so `agent` assistant/thinking
+ * streams still update the live bubble.
+ *
+ * Some continuation paths omit `sessionKey` on agent payloads; only reject when it is
+ * present and disagrees with the open chat session.
+ */
+function tryReconcileAgentRunId(
+  host: ToolStreamHost,
+  payload: AgentEventPayload,
+): { accepted: boolean } {
+  const sessionKey = typeof payload.sessionKey === "string" ? payload.sessionKey : undefined;
+  if (sessionKey && sessionKey !== host.sessionKey) {
+    return { accepted: false };
+  }
+  if (!host.chatRunId) {
+    return { accepted: false };
+  }
+  if (typeof payload.runId !== "string" || payload.runId === host.chatRunId) {
+    return { accepted: false };
+  }
+  host.chatRunId = payload.runId;
+  return { accepted: true };
 }
 
 function handleLifecycleFallbackEvent(host: CompactionHost, payload: AgentEventPayload) {
@@ -397,8 +475,13 @@ export function handleAgentEvent(host: ToolStreamHost, payload?: AgentEventPaylo
     return;
   }
 
-  // Handle compaction events
+  // Handle compaction events (reconcile runId like assistant/thinking for hybrid-gateway continuation)
   if (payload.stream === "compaction") {
+    const sessionOk = resolveAcceptedSession(host, payload, { allowSessionScopedWhenIdle: true })
+      .accepted;
+    if (!sessionOk && !tryReconcileAgentRunId(host, payload).accepted) {
+      return;
+    }
     handleCompactionEvent(host as CompactionHost, payload);
     return;
   }
@@ -414,13 +497,29 @@ export function handleAgentEvent(host: ToolStreamHost, payload?: AgentEventPaylo
 
   // Stream reasoning (thinking) content so the UI can show it live when reasoningLevel is "stream"
   if (payload.stream === "thinking") {
-    const accepted = resolveAcceptedSession(host, payload, { allowSessionScopedWhenIdle: true });
-    if (!accepted.accepted) {
+    const sessionOk = resolveAcceptedSession(host, payload, { allowSessionScopedWhenIdle: true })
+      .accepted;
+    if (!sessionOk && !tryReconcileAgentRunId(host, payload).accepted) {
       return;
     }
     const text = typeof payload.data?.text === "string" ? payload.data.text : null;
     if (text != null) {
       host.chatReasoningStream = text;
+    }
+    return;
+  }
+
+  // Mirror cumulative assistant text from agent WS events when chat `delta` events lag or throttle.
+  if (payload.stream === "assistant") {
+    const sessionOk = resolveAcceptedSession(host, payload, { allowSessionScopedWhenIdle: true })
+      .accepted;
+    if (!sessionOk && !tryReconcileAgentRunId(host, payload).accepted) {
+      return;
+    }
+    const text = typeof payload.data?.text === "string" ? payload.data.text : "";
+    if (text.trim()) {
+      host.chatStream = text;
+      host.chatStreamStartedAt = host.chatStreamStartedAt ?? Date.now();
     }
     return;
   }

@@ -217,6 +217,7 @@ export function connectGateway(host: GatewayHost) {
       // Reset orphaned chat run state from before disconnect.
       // Any in-flight run's final event was lost during the disconnect window.
       host.chatRunId = null;
+      (host as unknown as { pendingOptimisticUserMerge: null }).pendingOptimisticUserMerge = null;
       (host as unknown as { chatStream: string | null }).chatStream = null;
       (host as unknown as { chatReasoningStream: string | null }).chatReasoningStream = null;
       (host as unknown as { chatStreamStartedAt: number | null }).chatStreamStartedAt = null;

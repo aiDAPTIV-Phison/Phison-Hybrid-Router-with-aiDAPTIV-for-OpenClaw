@@ -172,6 +172,8 @@ export function createFollowupRunner(params: {
               sessionId: queued.run.sessionId,
               sessionKey: queued.run.sessionKey,
               agentId: queued.run.agentId,
+              approximateContextTokens: activeSessionEntry?.totalTokens,
+              contextTokensFresh: activeSessionEntry?.totalTokensFresh,
               trigger: "user",
               messageChannel: queued.originatingChannel ?? undefined,
               messageProvider: queued.run.messageProvider,
@@ -222,7 +224,11 @@ export function createFollowupRunner(params: {
                 }
                 const phase = typeof evt.data.phase === "string" ? evt.data.phase : "";
                 if (phase === "end") {
-                  autoCompactionCompleted = true;
+                  const willRetry = Boolean(evt.data.willRetry);
+                  const timedOut = Boolean(evt.data.timedOut);
+                  if (!willRetry && !timedOut) {
+                    autoCompactionCompleted = true;
+                  }
                 }
               },
             });

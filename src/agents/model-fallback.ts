@@ -34,6 +34,31 @@ import { isLikelyContextOverflowError } from "./pi-embedded-helpers.js";
 
 const log = createSubsystemLogger("model-fallback");
 
+/** hybrid-gateway appends cloud here so Edge context-overflow can fall through to Cloud */
+let hybridGatewayCloudFallback: ModelCandidate | null = null;
+
+/**
+ * When set (typically by the hybrid-gateway plugin), the configured cloud model is appended
+ * as an implicit last candidate when missing — enabling failover after Edge context errors.
+ */
+export function setHybridGatewayCloudFallback(candidate: ModelCandidate | null): void {
+  hybridGatewayCloudFallback = candidate;
+}
+
+function appendHybridGatewayCloudFallback(candidates: ModelCandidate[]): ModelCandidate[] {
+  if (!hybridGatewayCloudFallback) {
+    return candidates;
+  }
+  const extraKey = modelKey(hybridGatewayCloudFallback.provider, hybridGatewayCloudFallback.model);
+  if (candidates.some((c) => modelKey(c.provider, c.model) === extraKey)) {
+    return candidates;
+  }
+  log.info(
+    `model fallback: appended hybrid-gateway cloud escape hatch (${hybridGatewayCloudFallback.provider}/${hybridGatewayCloudFallback.model})`,
+  );
+  return [...candidates, hybridGatewayCloudFallback];
+}
+
 export type ModelFallbackRunOptions = {
   allowTransientCooldownProbe?: boolean;
 };
@@ -513,12 +538,14 @@ export async function runWithModelFallback<T>(params: {
   run: ModelFallbackRunFn<T>;
   onError?: ModelFallbackErrorHandler;
 }): Promise<ModelFallbackRunResult<T>> {
-  const candidates = resolveFallbackCandidates({
-    cfg: params.cfg,
-    provider: params.provider,
-    model: params.model,
-    fallbacksOverride: params.fallbacksOverride,
-  });
+  const candidates = appendHybridGatewayCloudFallback(
+    resolveFallbackCandidates({
+      cfg: params.cfg,
+      provider: params.provider,
+      model: params.model,
+      fallbacksOverride: params.fallbacksOverride,
+    }),
+  );
   const authStore = params.cfg
     ? ensureAuthProfileStore(params.agentDir, { allowKeychainPrompt: false })
     : null;
@@ -697,12 +724,49 @@ export async function runWithModelFallback<T>(params: {
           cooldownProbeUsedProviders.add(transientProbeProviderForAttempt);
         }
       }
-      // Context overflow errors should be handled by the inner runner's
-      // compaction/retry logic, not by model fallback.  If one escapes as a
-      // throw, rethrow it immediately rather than trying a different model
-      // that may have a smaller context window and fail worse.
+      // Context overflow is normally handled inside the embedded runner (compaction/retry).
+      // If it still surfaces here and another fallback candidate remains (e.g. hybrid-gateway
+      // cloud escape hatch), try the next model — larger-context cloud models often recover.
       const errMessage = err instanceof Error ? err.message : String(err);
-      if (isLikelyContextOverflowError(errMessage)) {
+      const overflow = isLikelyContextOverflowError(errMessage);
+      if (overflow && i < candidates.length - 1) {
+        log.warn(
+          `model fallback: context overflow on ${sanitizeForLog(candidate.provider)}/${sanitizeForLog(candidate.model)}; trying next candidate`,
+        );
+        lastError = err;
+        attempts.push({
+          provider: candidate.provider,
+          model: candidate.model,
+          error: errMessage,
+          reason: "unknown",
+        });
+        logModelFallbackDecision({
+          decision: "candidate_failed",
+          runId: params.runId,
+          requestedProvider: params.provider,
+          requestedModel: params.model,
+          candidate,
+          attempt: i + 1,
+          total: candidates.length,
+          reason: "unknown",
+          status: undefined,
+          code: undefined,
+          error: errMessage,
+          nextCandidate: candidates[i + 1],
+          isPrimary,
+          requestedModelMatched: requestedModel,
+          fallbackConfigured: hasFallbackCandidates,
+        });
+        await params.onError?.({
+          provider: candidate.provider,
+          model: candidate.model,
+          error: err,
+          attempt: i + 1,
+          total: candidates.length,
+        });
+        continue;
+      }
+      if (overflow) {
         throw err;
       }
       const normalized =

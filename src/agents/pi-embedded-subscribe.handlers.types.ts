@@ -62,6 +62,8 @@ export type EmbeddedPiSubscribeState = {
   lastReasoningSent?: string;
 
   compactionInFlight: boolean;
+  /** Set when aggregate compaction-retry wait timed out in embedded attempt (suppress duplicate final emit). */
+  compactionRetryAggregateTimedOut: boolean;
   pendingCompactionRetry: number;
   compactionRetryResolve?: () => void;
   compactionRetryReject?: (reason?: unknown) => void;

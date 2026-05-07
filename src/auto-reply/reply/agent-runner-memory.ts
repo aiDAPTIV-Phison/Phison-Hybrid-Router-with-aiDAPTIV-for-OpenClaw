@@ -500,6 +500,8 @@ export async function runMemoryFlushIfNeeded(params: {
           ...embeddedContext,
           ...senderContext,
           ...runBaseParams,
+          approximateContextTokens: activeSessionEntry?.totalTokens,
+          contextTokensFresh: activeSessionEntry?.totalTokensFresh,
           trigger: "memory",
           memoryFlushWritePath,
           prompt: resolveMemoryFlushPromptForRun({
@@ -515,7 +517,11 @@ export async function runMemoryFlushIfNeeded(params: {
             if (evt.stream === "compaction") {
               const phase = typeof evt.data.phase === "string" ? evt.data.phase : "";
               if (phase === "end") {
-                memoryCompactionCompleted = true;
+                const willRetry = Boolean(evt.data.willRetry);
+                const timedOut = Boolean(evt.data.timedOut);
+                if (!willRetry && !timedOut) {
+                  memoryCompactionCompleted = true;
+                }
               }
             }
           },

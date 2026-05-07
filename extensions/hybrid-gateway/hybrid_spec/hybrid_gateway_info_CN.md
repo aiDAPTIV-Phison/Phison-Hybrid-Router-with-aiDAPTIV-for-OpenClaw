@@ -22,7 +22,7 @@ User Input
 ╠═══════════════════════════════════════════════════════════╣
 ║  Step 2: ROUTE（路由引擎）                                 ║
 ║  Skill Route Override → Three-Tier Policy                   ║
-║  → 決定走 gateway / edge / cloud                            ║
+║  → 決定走 classifier / edge / cloud                            ║
 ╠═══════════════════════════════════════════════════════════╣
 ║  Step 3: EXECUTE（執行）                                   ║
 ║  呼叫選定的模型（fallback 由 OpenClaw 主程式處理）            ║
@@ -30,7 +30,7 @@ User Input
          ▼                  ▼              ▼
     llama.cpp          llama.cpp     ex. Google Gemini
     aiDAPTIVLink      aiDAPTIVLink     2.5 Flash
-    (gateway)          (edge)          (cloud)
+    (classifier)          (edge)          (cloud)
 ```
 
 ---
@@ -41,7 +41,7 @@ User Input
 
 | Tier | 可用模型 | 參數量 | 位置 | 用途 | 端口（範例） |
 | --- | --- | --- | --- | --- | --- |
-| **gateway** | qwen2.5-3b | 3B | 本地 aiDAPTIVLink | 分類器 + 簡單任務執行 | `127.0.0.1:13142` |
+| **classifier** | qwen2.5-3b | 3B | 本地 aiDAPTIVLink | 分類器 + 簡單任務執行 | `127.0.0.1:13142` |
 | **edge** | gemma4-26B、qwen3.5-35B、nemotron-120B、qwen3.5-122B | 26B–122B | 本地 aiDAPTIVLink | 中高複雜度任務執行 | `127.0.0.1:13141` |
 | **cloud** | gemini-2.5-flash 等 | — | ex. Google Cloud | 最高複雜度 / 多模態任務 | API endpoint |
 
@@ -54,7 +54,7 @@ User Input
 | nemotron-120B | cost-optimize-L3 |
 | qwen3.5-122B | cost-optimize-L3 |
 
-**核心設計：** gateway 模型（qwen2.5-3b）同時承擔分類器和輕量執行兩個角色。依 Policy 不同，低複雜度任務可直接由分類器模型回應，減少不必要的大模型呼叫，降低延遲與資源消耗。Edge 模型可依硬體資源選擇不同大小，並搭配對應的 Policy Level。
+**核心設計：** classifier 模型（qwen2.5-3b）同時承擔分類器和輕量執行兩個角色。依 Policy 不同，低複雜度任務可直接由分類器模型回應，減少不必要的大模型呼叫，降低延遲與資源消耗。Edge 模型可依硬體資源選擇不同大小，並搭配對應的 Policy Level。
 
 ---
 
@@ -80,8 +80,8 @@ User Input
 
 | Complexity | cost-optimize-L1 | cost-optimize-L2<br>(Default) | cost-optimize-L3 | edge-first | cloud-first |
 | --- | --- | --- | --- | --- | --- |
-| trivial (0) | **edge** | **gateway** | **gateway** | **edge** | **cloud** |
-| simple (1) | **edge** | **gateway** | **gateway** | **edge** | **cloud** |
+| trivial (0) | **edge** | **classifier** | **classifier** | **edge** | **cloud** |
+| simple (1) | **edge** | **classifier** | **classifier** | **edge** | **cloud** |
 | moderate (2) | **cloud** | **edge** | **edge** | **edge** | **cloud** |
 | complex (3) | **cloud** | **cloud** | **edge** | **edge** | **cloud** |
 | expert (4) | **cloud** | **cloud** | **cloud** | **edge** | **cloud** |

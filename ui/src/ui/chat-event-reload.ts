@@ -5,7 +5,7 @@ export function shouldReloadHistoryForFinalEvent(payload?: ChatEventPayload): bo
     return false;
   }
   if (!payload.message || typeof payload.message !== "object") {
-    return true;
+    return false;
   }
   const message = payload.message as Record<string, unknown>;
   const role = typeof message.role === "string" ? message.role.toLowerCase() : "";

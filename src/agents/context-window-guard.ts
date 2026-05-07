@@ -1,9 +1,15 @@
 import type { OpenClawConfig } from "../config/config.js";
+import { getHybridGatewayEdgeMaxContextTokens } from "./hybrid-gateway-cloud-fallback.js";
 
 export const CONTEXT_WINDOW_HARD_MIN_TOKENS = 16_000;
 export const CONTEXT_WINDOW_WARN_BELOW_TOKENS = 32_000;
 
-export type ContextWindowSource = "model" | "modelsConfig" | "agentContextTokens" | "default";
+export type ContextWindowSource =
+  | "model"
+  | "modelsConfig"
+  | "agentContextTokens"
+  | "default"
+  | "hybridGatewayEdge";
 
 export type ContextWindowInfo = {
   tokens: number;
@@ -42,11 +48,17 @@ export function resolveContextWindowInfo(params: {
       : { tokens: Math.floor(params.defaultTokens), source: "default" as const };
 
   const capTokens = normalizePositiveInt(params.cfg?.agents?.defaults?.contextTokens);
+  let info: ContextWindowInfo = baseInfo;
   if (capTokens && capTokens < baseInfo.tokens) {
-    return { tokens: capTokens, source: "agentContextTokens" };
+    info = { tokens: capTokens, source: "agentContextTokens" };
   }
 
-  return baseInfo;
+  const edgeMax = getHybridGatewayEdgeMaxContextTokens();
+  if (edgeMax != null && edgeMax < info.tokens) {
+    return { tokens: edgeMax, source: "hybridGatewayEdge" };
+  }
+
+  return info;
 }
 
 export type ContextWindowGuardResult = ContextWindowInfo & {

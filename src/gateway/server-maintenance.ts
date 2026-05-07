@@ -37,6 +37,7 @@ export function startGatewayMaintenanceTimers(params: {
     sessionKey?: string,
   ) => ChatRunEntry | undefined;
   agentRunSeq: Map<string, number>;
+  agentBusSeq: Map<string, number>;
   nodeSendToSession: (sessionKey: string, event: string, payload: unknown) => void;
   mediaCleanupTtlMs?: number;
 }): {
@@ -90,17 +91,21 @@ export function startGatewayMaintenanceTimers(params: {
       }
     }
 
-    if (params.agentRunSeq.size > AGENT_RUN_SEQ_MAX) {
-      const excess = params.agentRunSeq.size - AGENT_RUN_SEQ_MAX;
-      let removed = 0;
-      for (const runId of params.agentRunSeq.keys()) {
-        params.agentRunSeq.delete(runId);
-        removed += 1;
-        if (removed >= excess) {
-          break;
+    const pruneSeqMap = (map: Map<string, number>) => {
+      if (map.size > AGENT_RUN_SEQ_MAX) {
+        const excess = map.size - AGENT_RUN_SEQ_MAX;
+        let removed = 0;
+        for (const runId of map.keys()) {
+          map.delete(runId);
+          removed += 1;
+          if (removed >= excess) {
+            break;
+          }
         }
       }
-    }
+    };
+    pruneSeqMap(params.agentRunSeq);
+    pruneSeqMap(params.agentBusSeq);
 
     for (const [runId, entry] of params.chatAbortControllers) {
       if (now <= entry.expiresAtMs) {

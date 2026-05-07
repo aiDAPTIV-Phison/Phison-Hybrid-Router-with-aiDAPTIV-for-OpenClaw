@@ -20,6 +20,7 @@ import { getMachineDisplayName } from "../../infra/machine-name.js";
 import { generateSecureToken } from "../../infra/secure-random.js";
 import { getMemorySearchManager } from "../../memory/index.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
+import type { PluginHookBeforeModelResolveResult } from "../../plugins/types.js";
 import { type enqueueCommand, enqueueCommandInLane } from "../../process/command-queue.js";
 import { isCronSessionKey, isSubagentSessionKey } from "../../routing/session-key.js";
 import { emitSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
@@ -190,6 +191,29 @@ function resolveMessageToolLabel(msg: AgentMessage): string | undefined {
     (msg as { name?: unknown }).name ??
     (msg as { tool?: unknown }).tool;
   return typeof candidate === "string" && candidate.trim().length > 0 ? candidate : undefined;
+}
+
+async function estimateCompactionSessionContextTokens(
+  sessionFile: string,
+): Promise<number | undefined> {
+  const trimmed = sessionFile.trim();
+  if (!trimmed) return undefined;
+  try {
+    await fs.access(trimmed);
+  } catch {
+    return undefined;
+  }
+  try {
+    const mgr = SessionManager.open(trimmed);
+    const ctx = mgr.buildSessionContext();
+    let total = 0;
+    for (const msg of ctx.messages) {
+      total += estimateTokens(msg);
+    }
+    return total;
+  } catch {
+    return undefined;
+  }
 }
 
 function summarizeCompactionMessages(messages: AgentMessage[]): CompactionMessageMetrics {
@@ -419,6 +443,51 @@ export async function compactEmbeddedPiSessionDirect(
   };
   const agentDir = params.agentDir ?? resolveOpenClawAgentDir();
   await ensureOpenClawModelsJson(params.config, agentDir);
+
+  let compactionRouteOverride: PluginHookBeforeModelResolveResult | undefined;
+  const compactionHookRunner = getGlobalHookRunner();
+  let compactionTranscriptTokens: number | undefined;
+  try {
+    compactionTranscriptTokens = await estimateCompactionSessionContextTokens(params.sessionFile);
+  } catch {
+    compactionTranscriptTokens = undefined;
+  }
+  if (compactionHookRunner?.hasHooks("before_model_resolve")) {
+    try {
+      compactionRouteOverride = await compactionHookRunner.runBeforeModelResolve(
+        {
+          prompt: "",
+          approximateContextTokens: compactionTranscriptTokens,
+          contextTokensFresh: compactionTranscriptTokens != null,
+        },
+        {
+          agentId: resolveSessionAgentId({
+            sessionKey: params.sessionKey,
+            config: params.config,
+          }),
+          sessionKey: params.sessionKey,
+          sessionId: params.sessionId,
+          workspaceDir: resolvedWorkspace,
+          messageProvider: params.messageChannel ?? params.messageProvider ?? undefined,
+          trigger: params.trigger === "overflow" ? "user" : undefined,
+          channelId: params.messageChannel ?? params.messageProvider ?? undefined,
+        },
+      );
+    } catch (hookErr) {
+      log.warn(`before_model_resolve hook failed (compaction): ${String(hookErr)}`);
+    }
+  }
+  if (compactionRouteOverride?.providerOverride?.trim()) {
+    const nextProvider = compactionRouteOverride.providerOverride.trim();
+    if (nextProvider !== (params.provider ?? "").trim()) {
+      authProfileId = undefined;
+    }
+    provider = nextProvider;
+  }
+  if (compactionRouteOverride?.modelOverride?.trim()) {
+    modelId = compactionRouteOverride.modelOverride.trim();
+  }
+
   const { model, error, authStorage, modelRegistry } = resolveModel(
     provider,
     modelId,

@@ -41,7 +41,11 @@ export const mockedGlobalHookRunner = {
   ),
   runBeforeModelResolve: vi.fn(
     async (
-      _event: { prompt: string },
+      _event: {
+        prompt: string;
+        approximateContextTokens?: number;
+        contextTokensFresh?: boolean;
+      },
       _ctx: PluginHookAgentContext,
     ): Promise<PluginHookBeforeModelResolveResult | undefined> => undefined,
   ),

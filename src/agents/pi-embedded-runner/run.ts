@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
+import type { Api, Model } from "@mariozechner/pi-ai";
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
 import {
   ensureContextEnginesInitialized,
@@ -26,6 +27,7 @@ import {
   CONTEXT_WINDOW_WARN_BELOW_TOKENS,
   evaluateContextWindowGuard,
   resolveContextWindowInfo,
+  type ContextWindowInfo,
 } from "../context-window-guard.js";
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_MODEL, DEFAULT_PROVIDER } from "../defaults.js";
 import { FailoverError, resolveFailoverStatus } from "../failover-error.js";
@@ -56,6 +58,11 @@ import {
   type FailoverReason,
 } from "../pi-embedded-helpers.js";
 import { ensureRuntimePluginsLoaded } from "../runtime-plugins.js";
+import {
+  getHybridGatewayCloudFallback,
+  HybridGatewayPayloadTooLargeForEdgeError,
+  publishHybridGatewayRoutingDecisionForUi,
+} from "../hybrid-gateway-cloud-fallback.js";
 import { derivePromptTokens, normalizeUsage, type UsageLike } from "../usage.js";
 import { redactRunIdentifier, resolveRunWorkspaceDir } from "../workspace-run.js";
 import { resolveGlobalLane, resolveSessionLane } from "./lanes.js";
@@ -253,6 +260,18 @@ function buildErrorAgentMeta(params: {
   };
 }
 
+function logEffectiveContextWindowHybridCap(
+  ctxInfo: ContextWindowInfo,
+  provider: string,
+  modelId: string,
+): void {
+  if (ctxInfo.source === "hybridGatewayEdge") {
+    log.info(
+      `effective contextWindow capped to edgeMax=${ctxInfo.tokens} tokens (hybrid-gateway) for ${provider}/${modelId}`,
+    );
+  }
+}
+
 export async function runEmbeddedPiAgent(
   params: RunEmbeddedPiAgentParams,
 ): Promise<EmbeddedPiRunResult> {
@@ -326,7 +345,11 @@ export async function runEmbeddedPiAgent(
       if (hookRunner?.hasHooks("before_model_resolve")) {
         try {
           modelResolveOverride = await hookRunner.runBeforeModelResolve(
-            { prompt: params.prompt },
+            {
+              prompt: params.prompt,
+              approximateContextTokens: params.approximateContextTokens,
+              contextTokensFresh: params.contextTokensFresh,
+            },
             hookCtx,
           );
         } catch (hookErr) {
@@ -336,7 +359,11 @@ export async function runEmbeddedPiAgent(
       if (hookRunner?.hasHooks("before_agent_start")) {
         try {
           legacyBeforeAgentStartResult = await hookRunner.runBeforeAgentStart(
-            { prompt: params.prompt },
+            {
+              prompt: params.prompt,
+              approximateContextTokens: params.approximateContextTokens,
+              contextTokensFresh: params.contextTokensFresh,
+            },
             hookCtx,
           );
           modelResolveOverride = {
@@ -361,30 +388,28 @@ export async function runEmbeddedPiAgent(
         log.info(`[hooks] model overridden to ${modelId}`);
       }
 
-      const { model, error, authStorage, modelRegistry } = resolveModel(
-        provider,
-        modelId,
-        agentDir,
-        params.config,
-      );
-      if (!model) {
+      const resolvePack = resolveModel(provider, modelId, agentDir, params.config);
+      const { error, authStorage, modelRegistry } = resolvePack;
+      if (!resolvePack.model) {
         throw new FailoverError(error ?? `Unknown model: ${provider}/${modelId}`, {
           reason: "model_not_found",
           provider,
           model: modelId,
         });
       }
+      let model: Model<Api> = resolvePack.model;
 
-      const ctxInfo = resolveContextWindowInfo({
+      let ctxInfo = resolveContextWindowInfo({
         cfg: params.config,
         provider,
         modelId,
         modelContextWindow: model.contextWindow,
         defaultTokens: DEFAULT_CONTEXT_TOKENS,
       });
+      logEffectiveContextWindowHybridCap(ctxInfo, provider, modelId);
       // Apply contextTokens cap to model so pi-coding-agent's auto-compaction
       // threshold uses the effective limit, not the native context window.
-      const effectiveModel =
+      let effectiveModel =
         ctxInfo.tokens < (model.contextWindow ?? Infinity)
           ? { ...model, contextWindow: ctxInfo.tokens }
           : model;
@@ -741,6 +766,12 @@ export async function runEmbeddedPiAgent(
       const MAX_RUN_LOOP_ITERATIONS = resolveMaxRunRetryIterations(profileCandidates.length);
       let overflowCompactionAttempts = 0;
       let toolResultTruncationAttempted = false;
+      /** Payload guard escalated to cloud and continued successfully (do not retry indefinitely). */
+      let hybridGatewayPayloadCloudEscalated = false;
+      /** Next embedded attempt should continue() after stripping payload-guard assistant error. */
+      let resumeAfterHybridGatewayPayloadEscalation = false;
+      /** One-shot retry with hybrid-gateway cloud tier after irrecoverable context overflow (independent of payload guard). */
+      let hybridGatewayOverflowCloudEscalated = false;
       let bootstrapPromptWarningSignaturesSeen =
         params.bootstrapPromptWarningSignaturesSeen ??
         (params.bootstrapPromptWarningSignature ? [params.bootstrapPromptWarningSignature] : []);
@@ -849,6 +880,7 @@ export async function runEmbeddedPiAgent(
             provider === "anthropic" ? scrubAnthropicRefusalMagic(params.prompt) : params.prompt;
 
           const attempt = await runEmbeddedAttempt({
+            resumeAfterHybridGatewayPayloadEscalation,
             sessionId: params.sessionId,
             sessionKey: params.sessionKey,
             trigger: params.trigger,
@@ -922,6 +954,7 @@ export async function runEmbeddedPiAgent(
             bootstrapPromptWarningSignature:
               bootstrapPromptWarningSignaturesSeen[bootstrapPromptWarningSignaturesSeen.length - 1],
           });
+          resumeAfterHybridGatewayPayloadEscalation = false;
 
           const {
             aborted,
@@ -941,6 +974,72 @@ export async function runEmbeddedPiAgent(
                   ]),
                 )
               : bootstrapPromptWarningSignaturesSeen);
+
+          if (
+            !aborted &&
+            promptError instanceof HybridGatewayPayloadTooLargeForEdgeError
+          ) {
+            const cloudFb = getHybridGatewayCloudFallback();
+            const alreadyOnCloudEscalationTarget =
+              cloudFb &&
+              normalizeProviderId(provider) === normalizeProviderId(cloudFb.provider) &&
+              modelId === cloudFb.model;
+            if (!hybridGatewayPayloadCloudEscalated && cloudFb && !alreadyOnCloudEscalationTarget) {
+              const reResolved = resolveModel(cloudFb.provider, cloudFb.model, agentDir, params.config);
+              if (reResolved.model) {
+                const savedRunModel = {
+                  provider,
+                  modelId,
+                  model,
+                  ctxInfo,
+                  effectiveModel,
+                };
+                provider = cloudFb.provider;
+                modelId = cloudFb.model;
+                model = reResolved.model;
+                ctxInfo = resolveContextWindowInfo({
+                  cfg: params.config,
+                  provider,
+                  modelId,
+                  modelContextWindow: model.contextWindow,
+                  defaultTokens: DEFAULT_CONTEXT_TOKENS,
+                });
+                logEffectiveContextWindowHybridCap(ctxInfo, provider, modelId);
+                effectiveModel =
+                  ctxInfo.tokens < (model.contextWindow ?? Infinity)
+                    ? { ...model, contextWindow: ctxInfo.tokens }
+                    : model;
+                overflowCompactionAttempts = 0;
+                toolResultTruncationAttempted = false;
+                log.warn(
+                  `[hybrid-gw] outbound payload ~${promptError.details.estimatedTokens} tokens >= threshold ${promptError.details.escalationThresholdTokens} ` +
+                    `(edgeMax=${promptError.details.edgeMaxTokens} reserve=${promptError.details.reserveTokens} safeHeadroom=${promptError.details.safeHeadroomTokens}); retrying with cloud ${provider}/${modelId}`,
+                );
+                try {
+                  publishHybridGatewayRoutingDecisionForUi({
+                    tier: "cloud",
+                    provider,
+                    model: modelId,
+                    reason: "payload_escalation",
+                  });
+                  resumeAfterHybridGatewayPayloadEscalation = true;
+                  await applyApiKeyInfo(profileCandidates[profileIndex]);
+                  hybridGatewayPayloadCloudEscalated = true;
+                  continue;
+                } catch (keyErr) {
+                  provider = savedRunModel.provider;
+                  modelId = savedRunModel.modelId;
+                  model = savedRunModel.model;
+                  ctxInfo = savedRunModel.ctxInfo;
+                  effectiveModel = savedRunModel.effectiveModel;
+                  log.warn(
+                    `[hybrid-gw] cloud escalation (payload guard): credentials unavailable (${describeUnknownError(keyErr)}); surfacing error`,
+                  );
+                }
+              }
+            }
+          }
+
           const lastAssistantUsage = normalizeUsage(lastAssistant?.usage as UsageLike);
           const attemptUsage = attempt.attemptUsage ?? lastAssistantUsage;
           mergeUsageIntoAccumulator(usageAccumulator, attemptUsage);
@@ -963,24 +1062,29 @@ export async function runEmbeddedPiAgent(
                 model: activeErrorContext.model,
               })
             : undefined;
-          const assistantErrorText =
-            lastAssistant?.stopReason === "error"
-              ? lastAssistant.errorMessage?.trim() || formattedAssistantErrorText
-              : undefined;
+          const rawAssistantError =
+            lastAssistant?.stopReason === "error" ? lastAssistant.errorMessage?.trim() : undefined;
+          const assistantErrorText = rawAssistantError || formattedAssistantErrorText;
 
           const contextOverflowError = !aborted
             ? (() => {
-                if (promptError) {
-                  const errorText = describeUnknownError(promptError);
-                  if (isLikelyContextOverflowError(errorText)) {
-                    return { text: errorText, source: "promptError" as const };
-                  }
-                  // Prompt submission failed with a non-overflow error. Do not
-                  // inspect prior assistant errors from history for this attempt.
-                  return null;
+                const promptText = promptError ? describeUnknownError(promptError) : undefined;
+                const promptLooksOverflow =
+                  promptText && isLikelyContextOverflowError(promptText);
+                // Raw provider strings often fail heuristics; formatted copy may encode overflow
+                // (e.g. llama.cpp detail vs OpenClaw user-facing line).
+                const assistantOverflowText = [
+                  rawAssistantError,
+                  formattedAssistantErrorText,
+                  assistantErrorText,
+                ].find((t): t is string => !!t && isLikelyContextOverflowError(t));
+                const assistantLooksOverflow = assistantOverflowText != null;
+                // Prefer prompt-side errors when both classify as overflow (same-turn API failure).
+                if (promptLooksOverflow) {
+                  return { text: promptText, source: "promptError" as const };
                 }
-                if (assistantErrorText && isLikelyContextOverflowError(assistantErrorText)) {
-                  return { text: assistantErrorText, source: "assistantError" as const };
+                if (assistantLooksOverflow && assistantOverflowText) {
+                  return { text: assistantOverflowText, source: "assistantError" as const };
                 }
                 return null;
               })()
@@ -1188,6 +1292,47 @@ export async function runEmbeddedPiAgent(
                   `attempt=${overflowCompactionAttempts} maxAttempts=${MAX_OVERFLOW_COMPACTION_ATTEMPTS}`,
               );
             }
+
+            const cloudFb = getHybridGatewayCloudFallback();
+            const alreadyOnCloudEscalationTarget =
+              cloudFb &&
+              normalizeProviderId(provider) === normalizeProviderId(cloudFb.provider) &&
+              modelId === cloudFb.model;
+            if (!hybridGatewayOverflowCloudEscalated && cloudFb && !alreadyOnCloudEscalationTarget) {
+              const reResolved = resolveModel(cloudFb.provider, cloudFb.model, agentDir, params.config);
+              if (reResolved.model) {
+                hybridGatewayOverflowCloudEscalated = true;
+                provider = cloudFb.provider;
+                modelId = cloudFb.model;
+                model = reResolved.model;
+                ctxInfo = resolveContextWindowInfo({
+                  cfg: params.config,
+                  provider,
+                  modelId,
+                  modelContextWindow: model.contextWindow,
+                  defaultTokens: DEFAULT_CONTEXT_TOKENS,
+                });
+                logEffectiveContextWindowHybridCap(ctxInfo, provider, modelId);
+                effectiveModel =
+                  ctxInfo.tokens < (model.contextWindow ?? Infinity)
+                    ? { ...model, contextWindow: ctxInfo.tokens }
+                    : model;
+                overflowCompactionAttempts = 0;
+                toolResultTruncationAttempted = false;
+                log.warn(
+                  `[hybrid-gw] context overflow on edge/local; retrying once with cloud ${provider}/${modelId}`,
+                );
+                try {
+                  await applyApiKeyInfo(profileCandidates[profileIndex]);
+                  continue;
+                } catch (keyErr) {
+                  log.warn(
+                    `[hybrid-gw] cloud escape hatch: credentials unavailable (${describeUnknownError(keyErr)}); surfacing overflow error`,
+                  );
+                }
+              }
+            }
+
             const kind = isCompactionFailure ? "compaction_failure" : "context_overflow";
             return {
               payloads: [

@@ -600,6 +600,8 @@ export async function runCronIsolatedAgentTurn(params: {
             sessionId: cronSession.sessionEntry.sessionId,
             sessionKey: agentSessionKey,
             agentId,
+            approximateContextTokens: cronSession.sessionEntry.totalTokens,
+            contextTokensFresh: cronSession.sessionEntry.totalTokensFresh,
             trigger: "cron",
             // Cron jobs are trusted local automation, so isolated runs should
             // inherit owner-only tooling like local `openclaw agent` runs.

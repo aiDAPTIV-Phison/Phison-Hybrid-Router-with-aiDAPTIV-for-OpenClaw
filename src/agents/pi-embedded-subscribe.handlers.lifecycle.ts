@@ -18,6 +18,7 @@ export function handleAgentStart(ctx: EmbeddedPiSubscribeContext) {
   ctx.log.debug(`embedded run agent start: runId=${ctx.params.runId}`);
   emitAgentEvent({
     runId: ctx.params.runId,
+    ...(ctx.params.sessionKey ? { sessionKey: ctx.params.sessionKey } : {}),
     stream: "lifecycle",
     data: {
       phase: "start",
@@ -64,6 +65,7 @@ export function handleAgentEnd(ctx: EmbeddedPiSubscribeContext) {
     });
     emitAgentEvent({
       runId: ctx.params.runId,
+      ...(ctx.params.sessionKey ? { sessionKey: ctx.params.sessionKey } : {}),
       stream: "lifecycle",
       data: {
         phase: "error",
@@ -82,6 +84,7 @@ export function handleAgentEnd(ctx: EmbeddedPiSubscribeContext) {
     ctx.log.debug(`embedded run agent end: runId=${ctx.params.runId} isError=${isError}`);
     emitAgentEvent({
       runId: ctx.params.runId,
+      ...(ctx.params.sessionKey ? { sessionKey: ctx.params.sessionKey } : {}),
       stream: "lifecycle",
       data: {
         phase: "end",
@@ -105,8 +108,27 @@ export function handleAgentEnd(ctx: EmbeddedPiSubscribeContext) {
   ctx.state.blockState.final = false;
   ctx.state.blockState.inlineCode = createInlineCodeState();
 
+  // Each auto_compaction_end with willRetry increments pendingCompactionRetry once.
+  // A single agent turn can trigger multiple compactions (nested / sequential); one agent_end
+  // means the full prompt completed — drain all pending so compaction wait promises resolve.
   if (ctx.state.pendingCompactionRetry > 0) {
-    ctx.resolveCompactionRetry();
+    while (ctx.state.pendingCompactionRetry > 0) {
+      ctx.resolveCompactionRetry();
+    }
+    // Final UI signal: compaction + retry chain settled (embedded attempt did not already emit timeout end).
+    if (!ctx.state.compactionRetryAggregateTimedOut) {
+      emitAgentEvent({
+        runId: ctx.params.runId,
+        ...(ctx.params.sessionKey ? { sessionKey: ctx.params.sessionKey } : {}),
+        stream: "compaction",
+        data: { phase: "end", willRetry: false },
+      });
+      void ctx.params.onAgentEvent?.({
+        stream: "compaction",
+        data: { phase: "end", willRetry: false },
+      });
+    }
+    ctx.state.compactionRetryAggregateTimedOut = false;
   } else {
     ctx.maybeResolveCompactionWait();
   }
