@@ -459,6 +459,8 @@ function runAgentAttempt(params: {
     sessionId: params.sessionId,
     sessionKey: params.sessionKey,
     agentId: params.sessionAgentId,
+    approximateContextTokens: params.sessionEntry?.totalTokens,
+    contextTokensFresh: params.sessionEntry?.totalTokensFresh,
     trigger: "user",
     messageChannel: params.messageChannel,
     agentAccountId: params.runContext.accountId,

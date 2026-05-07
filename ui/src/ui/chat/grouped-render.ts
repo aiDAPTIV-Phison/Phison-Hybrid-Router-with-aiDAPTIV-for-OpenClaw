@@ -19,6 +19,37 @@ type ImageBlock = {
   alt?: string;
 };
 
+/** System transcript markers for JSONL compaction rows — short label only in some builds. */
+function resolveCompactionThreadNoticeText(message: unknown, extractedText: string | null): string | null {
+  const m = message as Record<string, unknown>;
+  const role = typeof m.role === "string" ? m.role.toLowerCase() : "";
+  if (role !== "system") {
+    return null;
+  }
+  const oc = m.__openclaw as { kind?: string } | undefined;
+  const marked = oc?.kind === "compaction";
+  const text = (extractedText ?? "").trim();
+
+  const isCompaction =
+    marked ||
+    text === "Compaction" ||
+    /context compaction/i.test(text) ||
+    /conversation history was summarized/i.test(text);
+
+  if (!isCompaction) {
+    return null;
+  }
+
+  if (text === "Compaction" || (marked && text.length === 0)) {
+    return (
+      "**Context compaction**\n\n" +
+      "Earlier turns were summarized or trimmed so the rest of the reply fits the model context window. " +
+      "Your latest messages and the assistant reply below are unaffected."
+    );
+  }
+  return text;
+}
+
 function extractImages(message: unknown): ImageBlock[] {
   const m = message as Record<string, unknown>;
   const content = m.content;
@@ -154,12 +185,19 @@ export function renderMessageGroup(
 ) {
   const normalizedRole = normalizeRoleForGrouping(group.role);
   const assistantName = opts.assistantName ?? "Assistant";
+  const firstMessage = group.messages[0]?.message;
+  const isCompactionNoticeGroup =
+    normalizedRole === "system" &&
+    Boolean(firstMessage) &&
+    resolveCompactionThreadNoticeText(firstMessage, extractTextCached(firstMessage)) != null;
   const who =
     normalizedRole === "user"
       ? "You"
       : normalizedRole === "assistant"
         ? assistantName
-        : normalizedRole;
+        : isCompactionNoticeGroup
+          ? "Session note"
+          : normalizedRole;
   const roleClass =
     normalizedRole === "user" ? "user" : normalizedRole === "assistant" ? "assistant" : "other";
   const timestamp = new Date(group.timestamp).toLocaleTimeString([], {
@@ -274,12 +312,21 @@ function renderGroupedMessage(
   const hasImages = images.length > 0;
 
   const extractedText = extractTextCached(message);
+  const compactionNotice = resolveCompactionThreadNoticeText(message, extractedText);
   const extractedThinking =
     opts.showReasoning && role === "assistant" ? extractThinkingCached(message) : null;
   const markdownBase = extractedText?.trim() ? extractedText : null;
   const reasoningMarkdown = extractedThinking ? formatReasoningMarkdown(extractedThinking) : null;
   const markdown = markdownBase;
   const canCopyMarkdown = role === "assistant" && Boolean(markdown?.trim());
+
+  if (compactionNotice) {
+    return html`
+      <div class="chat-compaction-notice fade-in">
+        <div class="chat-text">${unsafeHTML(toSanitizedMarkdownHtml(compactionNotice))}</div>
+      </div>
+    `;
+  }
 
   const bubbleClasses = [
     "chat-bubble",

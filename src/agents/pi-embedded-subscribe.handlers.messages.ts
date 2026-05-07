@@ -155,6 +155,7 @@ export function handleMessageUpdate(
       ctx.state.toolGeneratingNames.set(contentIndex, rawName || "tool");
       emitAgentEvent({
         runId: ctx.params.runId,
+        ...(ctx.params.sessionKey ? { sessionKey: ctx.params.sessionKey } : {}),
         stream: "tool_generating",
         data: { name: rawName || "tool", tokens: 0 },
       });
@@ -165,6 +166,7 @@ export function handleMessageUpdate(
         const name = ctx.state.toolGeneratingNames.get(contentIndex) ?? "tool";
         emitAgentEvent({
           runId: ctx.params.runId,
+          ...(ctx.params.sessionKey ? { sessionKey: ctx.params.sessionKey } : {}),
           stream: "tool_generating",
           data: { name, tokens: count },
         });
@@ -265,6 +267,7 @@ export function handleMessageUpdate(
     if (shouldEmit) {
       emitAgentEvent({
         runId: ctx.params.runId,
+        ...(ctx.params.sessionKey ? { sessionKey: ctx.params.sessionKey } : {}),
         stream: "assistant",
         data: {
           text: cleanedText,
@@ -356,6 +359,7 @@ export function handleMessageEnd(
   if (!ctx.state.emittedAssistantUpdate && (cleanedText || hasMedia)) {
     emitAgentEvent({
       runId: ctx.params.runId,
+      ...(ctx.params.sessionKey ? { sessionKey: ctx.params.sessionKey } : {}),
       stream: "assistant",
       data: {
         text: cleanedText,

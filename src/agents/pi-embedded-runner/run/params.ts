@@ -125,4 +125,11 @@ export type RunEmbeddedPiAgentParams = {
    * where transient service pressure is often model-scoped.
    */
   allowTransientCooldownProbe?: boolean;
+  /**
+   * Best-effort session context usage from the prior turn (e.g. SessionEntry.totalTokens).
+   * Passed to `before_model_resolve` for plugins that route by context size.
+   */
+  approximateContextTokens?: number;
+  /** When false/undefined, approximateContextTokens may be stale. */
+  contextTokensFresh?: boolean;
 };

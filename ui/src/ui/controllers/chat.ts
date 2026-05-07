@@ -10,6 +10,13 @@ export type LastAppendedFinalMessage = {
   at: number;
 };
 
+/** Optimistic user row kept across loadChatHistory until the transcript includes the same text. */
+export type PendingOptimisticUserMerge = {
+  runId: string;
+  message: unknown;
+  at: number;
+};
+
 export type ChatRoutingInfo = {
   tier: string;
   model: string;
@@ -33,6 +40,8 @@ export type ChatState = {
   lastError: string | null;
   /** If set, loadChatHistory will merge this into the loaded list so compaction/API doesn't drop it. */
   lastAppendedFinalMessage: LastAppendedFinalMessage | null;
+  /** If set, loadChatHistory merges this user row when the server copy is stale (text-only sends). */
+  pendingOptimisticUserMerge: PendingOptimisticUserMerge | null;
 };
 
 export type ChatEventPayload = {
@@ -47,11 +56,31 @@ export type ChatEventPayload = {
 };
 
 const LAST_APPENDED_FINAL_TTL_MS = 15_000;
+const OPTIMISTIC_USER_MERGE_TTL_MS = 120_000;
 
 function lastMessageText(messages: unknown[]): string | null {
   if (!Array.isArray(messages) || messages.length === 0) return null;
   const last = messages[messages.length - 1] as Record<string, unknown> | undefined;
   return last ? extractText(last) : null;
+}
+
+function userMessageWithTextExists(messages: unknown[], text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  for (const m of messages) {
+    const rec = m as Record<string, unknown>;
+    if (typeof rec.role !== "string" || rec.role.toLowerCase() !== "user") continue;
+    if (extractText(m)?.trim() === t) return true;
+  }
+  return false;
+}
+
+/** Final events with no message body appear during compaction / hybrid retries — must not clear run state. */
+function isGhostFinal(payload: ChatEventPayload): boolean {
+  return (
+    payload.state === "final" &&
+    (payload.message == null || typeof payload.message !== "object")
+  );
 }
 
 export async function loadChatHistory(state: ChatState) {
@@ -77,6 +106,21 @@ export async function loadChatHistory(state: ChatState) {
       }
       state.lastAppendedFinalMessage = null;
     }
+
+    const pendingUser = state.pendingOptimisticUserMerge;
+    if (pendingUser && Date.now() - pendingUser.at < OPTIMISTIC_USER_MERGE_TTL_MS) {
+      const pendingText = extractText(pendingUser.message)?.trim() ?? "";
+      if (pendingText) {
+        if (userMessageWithTextExists(messages, pendingText)) {
+          state.pendingOptimisticUserMerge = null;
+        } else {
+          messages = [...messages, pendingUser.message];
+        }
+      }
+    } else if (pendingUser) {
+      state.pendingOptimisticUserMerge = null;
+    }
+
     state.chatMessages = messages;
     state.chatThinkingLevel = res.thinkingLevel ?? null;
   } catch (err) {
@@ -119,18 +163,19 @@ export async function sendChatMessage(
     }
   }
 
-  state.chatMessages = [
-    ...state.chatMessages,
-    {
-      role: "user",
-      content: contentBlocks,
-      timestamp: now,
-    },
-  ];
+  const userEntry = {
+    role: "user" as const,
+    content: contentBlocks,
+    timestamp: now,
+  };
+  const runId = generateUUID();
+  state.chatMessages = [...state.chatMessages, userEntry];
+  if (msg.trim()) {
+    state.pendingOptimisticUserMerge = { runId, message: userEntry, at: now };
+  }
 
   state.chatSending = true;
   state.lastError = null;
-  const runId = generateUUID();
   state.chatRunId = runId;
   state.chatStream = "";
   state.chatReasoningStream = null;
@@ -163,6 +208,7 @@ export async function sendChatMessage(
     return runId;
   } catch (err) {
     const error = String(err);
+    state.pendingOptimisticUserMerge = null;
     state.chatRunId = null;
     state.chatStream = null;
     state.chatReasoningStream = null;
@@ -201,6 +247,10 @@ export async function abortChatRun(state: ChatState): Promise<boolean> {
 export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
   if (!payload) return null;
   if (payload.sessionKey !== state.sessionKey) return null;
+
+  if (isGhostFinal(payload)) {
+    return null;
+  }
 
   const isOtherRun =
     payload.runId && state.chatRunId && payload.runId !== state.chatRunId;

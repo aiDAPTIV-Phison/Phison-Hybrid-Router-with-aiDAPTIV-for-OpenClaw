@@ -23,13 +23,27 @@
         "type": "object",
         "properties": {
           "policy": { "type": "string", "enum": ["edge-first", "cloud-first", "cost-optimize", "cost-optimize-L1", "cost-optimize-L2", "cost-optimize-L3", "quality-first"] },
+          "policy-array": {
+            "type": "array",
+            "minItems": 5,
+            "maxItems": 5,
+            "items": { "type": "string", "enum": ["classifier", "edge", "cloud"] },
+            "description": "Optional 5-item override for `policy`. Index 0-4 maps to complexity trivial/simple/moderate/complex/expert. Each item must be one of [classifier, edge, cloud]. When valid, `policy` is ignored."
+          },
+          "policyArray": {
+            "type": "array",
+            "minItems": 5,
+            "maxItems": 5,
+            "items": { "type": "string", "enum": ["classifier", "edge", "cloud"] },
+            "description": "camelCase alias of `policy-array`."
+          },
           "skillRoutes": {
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
                 "skillPattern": { "type": "string" },
-                "forceTier": { "type": "string", "enum": ["gateway", "edge", "cloud"] },
+                "forceTier": { "type": "string", "enum": ["classifier", "edge", "cloud"] },
                 "preferModel": { "type": "string" },
                 "reason": { "type": "string" }
               },
@@ -44,7 +58,7 @@
           },
           "newSessionTier": {
             "type": "string",
-            "enum": ["gateway", "edge", "cloud"],
+            "enum": ["classifier", "edge", "cloud"],
             "description": "Tier to force when a /new or /reset session-startup prompt is detected. Defaults to \"cloud\"."
           }
         }
@@ -52,7 +66,7 @@
       "models": {
         "type": "object",
         "properties": {
-          "gateway": {
+          "classifier": {
             "type": "object",
             "properties": {
               "provider": { "type": "string" },

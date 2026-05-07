@@ -22,7 +22,7 @@ User Input
 ╠═══════════════════════════════════════════════════════════╣
 ║  Step 2: ROUTE                                            ║
 ║  Skill Route Override → Three-Tier Policy                 ║
-║  → decide: gateway / edge / cloud                         ║
+║  → decide: classifier / edge / cloud                         ║
 ╠═══════════════════════════════════════════════════════════╣
 ║  Step 3: EXECUTE                                          ║
 ║  Call the selected model (fallback handled by OpenClaw)   ║
@@ -30,7 +30,7 @@ User Input
          ▼                  ▼              ▼
     llama.cpp          llama.cpp     ex. Google Gemini
     aiDAPTIVLink      aiDAPTIVLink     2.5 Flash
-    (gateway)          (edge)          (cloud)
+    (classifier)          (edge)          (cloud)
 ```
 
 ---
@@ -41,7 +41,7 @@ User Input
 
 | Tier | Available Models | Parameters | Location | Purpose | Port (Example) |
 | --- | --- | --- | --- | --- | --- |
-| **gateway** | qwen2.5-3b | 3B | Local aiDAPTIVLink | Classifier + lightweight task execution | `127.0.0.1:13142` |
+| **classifier** | qwen2.5-3b | 3B | Local aiDAPTIVLink | Classifier + lightweight task execution | `127.0.0.1:13142` |
 | **edge** | gemma4-26B, qwen3.5-35B, nemotron-120B, qwen3.5-122B | 26B–122B | Local aiDAPTIVLink | Medium-to-high complexity task execution | `127.0.0.1:13141` |
 | **cloud** | gemini-2.5-flash, etc. | — | ex. Google Cloud | Highest complexity / multimodal tasks | API endpoint |
 
@@ -54,7 +54,7 @@ User Input
 | nemotron-120B | cost-optimize-L3 |
 | qwen3.5-122B | cost-optimize-L3 |
 
-**Core Design:** The gateway model (qwen2.5-3b) serves dual roles as both classifier and lightweight executor. Depending on the Policy, low-complexity tasks can be answered directly by the classifier model, reducing unnecessary large-model calls and lowering latency and resource consumption. The edge model can be chosen in different sizes based on available hardware, paired with the corresponding Policy Level.
+**Core Design:** The classifier model (qwen2.5-3b) serves dual roles as both classifier and lightweight executor. Depending on the Policy, low-complexity tasks can be answered directly by the classifier model, reducing unnecessary large-model calls and lowering latency and resource consumption. The edge model can be chosen in different sizes based on available hardware, paired with the corresponding Policy Level.
 
 ---
 
@@ -80,19 +80,19 @@ The classifier inserts the user input into a prompt, sends it to the **classifie
 
 | Complexity | cost-optimize-L1 | cost-optimize-L2<br>(Default) | cost-optimize-L3 | edge-first | cloud-first |
 | --- | --- | --- | --- | --- | --- |
-| trivial (0) | **edge** | **gateway** | **gateway** | **edge** | **cloud** |
-| simple (1) | **edge** | **gateway** | **gateway** | **edge** | **cloud** |
+| trivial (0) | **edge** | **classifier** | **classifier** | **edge** | **cloud** |
+| simple (1) | **edge** | **classifier** | **classifier** | **edge** | **cloud** |
 | moderate (2) | **cloud** | **edge** | **edge** | **edge** | **cloud** |
 | complex (3) | **cloud** | **cloud** | **edge** | **edge** | **cloud** |
 | expert (4) | **cloud** | **cloud** | **cloud** | **edge** | **cloud** |
 
 | Policy Level | Applicable Edge Models | Routing Logic |
 | --- | --- | --- |
-| **L1** (small ~3B) | qwen2.5-3B (gateway = edge, same model) | 0–1 → edge, 2–4 → cloud |
-| **L2** (medium ~26-35B) | gemma4-26B, qwen3.5-35B (gateway = edge, same model) | 0–1 → gateway, 2 → edge, 3–4 → cloud (three-tier split) |
-| **L3** (large ~120B) | nemotron-120B, qwen3.5-122B | 0–1 → gateway, 2–3 → edge, 4 → cloud (strongest edge capability) |
+| **L1** (small ~3B) | qwen2.5-3B (classifier = edge, same model) | 0–1 → edge, 2–4 → cloud |
+| **L2** (medium ~26-35B) | gemma4-26B, qwen3.5-35B (classifier = edge, same model) | 0–1 → classifier, 2 → edge, 3–4 → cloud (three-tier split) |
+| **L3** (large ~120B) | nemotron-120B, qwen3.5-122B | 0–1 → classifier, 2–3 → edge, 4 → cloud (strongest edge capability) |
 
-> **Note: L3 requires simultaneously running a small ~3B gateway model** (e.g. qwen2.5-3B) as both classifier and lightweight executor. L1 requires only one instance since gateway = edge is the same model.
+> **Note: L3 requires simultaneously running a small ~3B classifier model** (e.g. qwen2.5-3B) as both classifier and lightweight executor. L1 requires only one instance since classifier = edge is the same model.
 
 **Default Policy: `cost-optimize-L2`** (can be overridden in the config file)
 
@@ -132,7 +132,7 @@ If all returned skills are not in the valid list, or skills is empty, `"conversa
 
 Examples (from `router.ts`):
 
-- `"policy=cost-optimize-L2, complexity=trivial, skills=[conversation] -> gateway"`
+- `"policy=cost-optimize-L2, complexity=trivial, skills=[conversation] -> classifier"`
 - `"policy=cost-optimize-L2, complexity=complex, skills=[analysis,coding] -> cloud"`
 - `"skill-route: pattern=image-gen, forceTier=cloud, skills=[image-gen], Image generation requires cloud model with multimodal capabilities"`
 
@@ -175,13 +175,13 @@ This is the last line of defense; under normal conditions the model returns corr
 
 ### 3.6 `/new` or `/reset` Forces a Configured Tier on Startup
 
-When the prompt contains `"A new session was started via /new or /reset"`, **the classifier and routing engine are skipped and the configured tier's model is used directly**. The target tier is controlled by `routing.newSessionTier`, which can be `"gateway"`, `"edge"`, or `"cloud"` and **defaults to `"cloud"`**.
+When the prompt contains `"A new session was started via /new or /reset"`, **the classifier and routing engine are skipped and the configured tier's model is used directly**. The target tier is controlled by `routing.newSessionTier`, which can be `"classifier"`, `"edge"`, or `"cloud"` and **defaults to `"cloud"`**.
 
 This behavior is implemented in `index.ts`'s `before_model_resolve` hook, intercepting before the classifier is called.
 
 ```json
 "routing": {
-  "newSessionTier": "cloud"   // "gateway" | "edge" | "cloud"
+  "newSessionTier": "cloud"   // "classifier" | "edge" | "cloud"
 }
 ```
 
@@ -196,7 +196,7 @@ User inputs /new or /reset
 
 > ⚠ **Note: This fail-safe only validates config completeness; it does not check whether the actual service is reachable.** If the selected tier's endpoint goes down at runtime (e.g. llama.cpp not running, cloud API key invalid), this layer cannot detect it. Runtime failure recovery is handled by the OpenClaw host program; see "Advanced: pairing with OpenClaw host fallback" below.
 
-Design rationale: The first response in a new session strongly impacts UX. The default `"cloud"` (cloud large model) prioritizes the best first-response quality and stability; switch to `"edge"` (large local model) for privacy/offline-sensitive deployments, or `"gateway"` for the fastest fully-local response.
+Design rationale: The first response in a new session strongly impacts UX. The default `"cloud"` (cloud large model) prioritizes the best first-response quality and stability; switch to `"edge"` (large local model) for privacy/offline-sensitive deployments, or `"classifier"` for the fastest fully-local response.
 
 #### Advanced (optional): pairing with OpenClaw host fallback
 
@@ -224,7 +224,7 @@ If you're worried that "the selected tier failing at runtime will simply error o
 
 **Notes:**
 - This setting is **completely optional**. Things still work without it (just with a less graceful failure response).
-- `fallbacks` references the user's host-level model list and **is not directly coupled to the hybrid-gateway gateway/edge/cloud tier concept** — the host only knows `provider/model` strings, not plugin tiers.
+- `fallbacks` references the user's host-level model list and **is not directly coupled to the hybrid-gateway classifier/edge/cloud tier concept** — the host only knows `provider/model` strings, not plugin tiers.
 - This fallback fires **only after a runtime call has failed**; it is not a pre-flight health check, so the **first failure still pays its full timeout cost** before the next candidate is tried.
 - Scope covers all hybrid-gateway routing decisions (not just new session): Stage 2 Policy routing, Skill Route Override, etc.
 
@@ -296,7 +296,7 @@ Classification result { complexity, skills }
 [Stage 1] Skill Route Override → matched? → decide model directly, skip Stage 2
   │
   ▼ (no match)
-[Stage 2] Three-Tier Routing Policy → determine tier (gateway / edge / cloud) based on complexity
+[Stage 2] Three-Tier Routing Policy → determine tier (classifier / edge / cloud) based on complexity
   │
   ▼
 Final model selected → RoutingDecision
@@ -363,8 +363,8 @@ Policy is divided into L1/L2/L3 levels based on edge model capability, with thre
 
 | Detected Complexity | `edge-first` | `cloud-first` | `cost-optimize-L1` | `cost-optimize-L2`<br>(Default) | `cost-optimize-L3` |
 | --- | --- | --- | --- | --- | --- |
-| trivial (0) | **edge** | **cloud** | **edge** | **gateway** | **gateway** |
-| simple (1) | **edge** | **cloud** | **edge** | **gateway** | **gateway** |
+| trivial (0) | **edge** | **cloud** | **edge** | **classifier** | **classifier** |
+| simple (1) | **edge** | **cloud** | **edge** | **classifier** | **classifier** |
 | moderate (2) | **edge** | **cloud** | **cloud** | **edge** | **edge** |
 | complex (3) | **edge** | **cloud** | **cloud** | **cloud** | **edge** |
 | expert (4) | **edge** | **cloud** | **cloud** | **cloud** | **cloud** |
@@ -373,11 +373,11 @@ Design rationale for each Policy:
 
 | Policy | Rationale |
 | --- | --- |
-| `edge-first` | **Maximize local models**: always route to edge, never cloud, never gateway. |
+| `edge-first` | **Maximize local models**: always route to edge, never cloud, never classifier. |
 | `cloud-first` | **Always cloud**: route everything to cloud. |
-| `cost-optimize-L1` | **Small edge model (~3B)**: 0–1 → edge (= gateway, same model), 2–4 → cloud. Model too small to handle moderate+ tasks. |
-| `cost-optimize-L2` | **Medium edge model (~26-35B)**: 0–1 → gateway (same edge model), 2 → edge, 3–4 → cloud. Balances performance and cost. |
-| `cost-optimize-L3` | **Large edge model (~120B)**: 0–1 → gateway (3B), 2–3 → edge, 4 → cloud. Strongest edge capability; only expert tasks go to cloud. |
+| `cost-optimize-L1` | **Small edge model (~3B)**: 0–1 → edge (= classifier, same model), 2–4 → cloud. Model too small to handle moderate+ tasks. |
+| `cost-optimize-L2` | **Medium edge model (~26-35B)**: 0–1 → classifier (same edge model), 2 → edge, 3–4 → cloud. Balances performance and cost. |
+| `cost-optimize-L3` | **Large edge model (~120B)**: 0–1 → classifier (3B), 2–3 → edge, 4 → cloud. Strongest edge capability; only expert tasks go to cloud. |
 
 
 
@@ -408,9 +408,9 @@ RoutingDecision:
 
 | Original Tier | First Fallback | Second Fallback | All Failed |
 | --- | --- | --- | --- |
-| gateway (3B) down | → edge (120B) | → cloud | Return error |
-| edge (120B) down | → cloud | → gateway (3B) | Return error |
-| cloud down | → edge (120B) | → gateway (3B) | Return error |
+| classifier (3B) down | → edge (120B) | → cloud | Return error |
+| edge (120B) down | → cloud | → classifier (3B) | Return error |
+| cloud down | → edge (120B) | → classifier (3B) | Return error |
 
 Can be disabled in config: `"fallbackEnabled": false`
 
@@ -451,7 +451,7 @@ Below is the config file structure for the three-tier architecture (correspondin
     "thinkingStrategy": "auto"
   },
   "models": {
-    "gateway": {
+    "classifier": {
       "provider": "llamacpp",
       "model": "qwen2.5-3b-instruct-q4_k_m"
     },

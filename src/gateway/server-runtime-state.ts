@@ -77,7 +77,10 @@ export async function createGatewayRuntimeState(params: {
   clients: Set<GatewayWsClient>;
   broadcast: GatewayBroadcastFn;
   broadcastToConnIds: GatewayBroadcastToConnIdsFn;
+  /** Monotonic seq for `chat.*` WebSocket payloads (routing/delta/final). */
   agentRunSeq: Map<string, number>;
+  /** Monotonic seq for embedded agent bus events (`onAgentEvent`), separate from chat seq. */
+  agentBusSeq: Map<string, number>;
   dedupe: Map<string, DedupeEntry>;
   chatRunState: ReturnType<typeof createChatRunState>;
   chatRunBuffers: Map<string, string>;
@@ -205,6 +208,7 @@ export async function createGatewayRuntimeState(params: {
   }
 
   const agentRunSeq = new Map<string, number>();
+  const agentBusSeq = new Map<string, number>();
   const dedupe = new Map<string, DedupeEntry>();
   const chatRunState = createChatRunState();
   const chatRunRegistry = chatRunState.registry;
@@ -225,6 +229,7 @@ export async function createGatewayRuntimeState(params: {
     broadcast,
     broadcastToConnIds,
     agentRunSeq,
+    agentBusSeq,
     dedupe,
     chatRunState,
     chatRunBuffers,

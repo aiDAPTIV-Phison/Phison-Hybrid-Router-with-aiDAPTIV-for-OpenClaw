@@ -15,6 +15,7 @@ export type CacheTraceStage =
   | "session:sanitized"
   | "session:limited"
   | "prompt:before"
+  | "prompt:hybrid_gw_cloud_resume"
   | "prompt:images"
   | "stream:context"
   | "session:after";
