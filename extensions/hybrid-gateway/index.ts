@@ -82,6 +82,7 @@ const DEFAULT_CONFIG: HybridGatewayConfig = {
     skillRoutes: [],
     fallbackEnabled: true,
     contextReserveTokens: 0,
+    newSessionTier: "cloud",
   },
   models: {
     classifier: { provider: "llamacpp", model: "qwen2.5-3b-instruct-q4_k_m" },
@@ -168,6 +169,15 @@ function validatePolicyArray(raw: unknown): { ok: true; value: Tier[] } | { ok: 
 
 function formatPolicyArrayMapping(arr: Tier[]): string {
   return COMPLEXITY_LEVELS.map((lvl, idx) => `${lvl}(${idx})->${arr[idx]}`).join(", ");
+}
+
+/**
+ * Accepts tier ids plus legacy `"gateway"` (same model slot as `models.classifier`).
+ */
+function normalizeNewSessionTierInput(raw: unknown): Tier | undefined {
+  if (raw === "gateway") return "classifier";
+  if (raw === "classifier" || raw === "edge" || raw === "cloud") return raw;
+  return undefined;
 }
 
 // ---- User Text Extraction ----
@@ -346,10 +356,28 @@ const hybridGatewayPlugin = {
       ? `policy-array=[${config.routing.policyArray.join(",")}] (overrides policy="${config.routing.policy}")`
       : `policy=${config.routing.policy}`;
 
+    // Validate newSessionTier (classifier / edge / cloud, or legacy "gateway" → classifier)
+    const FAILSAFE_NEW_SESSION: Tier = "cloud";
+    const rawNewSession = (config.routing as { newSessionTier?: unknown }).newSessionTier;
+    let newSessionTier: Tier = normalizeNewSessionTierInput(rawNewSession) ?? FAILSAFE_NEW_SESSION;
+    if (rawNewSession !== undefined && normalizeNewSessionTierInput(rawNewSession) === undefined) {
+      log.warn(
+        `[hybrid-gw] invalid routing.newSessionTier=${JSON.stringify(rawNewSession)}, falling back to "${FAILSAFE_NEW_SESSION}"`,
+      );
+      newSessionTier = FAILSAFE_NEW_SESSION;
+    }
+    if (!config.models[newSessionTier]?.provider || !config.models[newSessionTier]?.model) {
+      log.warn(
+        `[hybrid-gw] routing.newSessionTier="${newSessionTier}" has no provider/model configured, falling back to "${FAILSAFE_NEW_SESSION}"`,
+      );
+      newSessionTier = FAILSAFE_NEW_SESSION;
+    }
+
     log.info(
       `[hybrid-gw] initializing: ${policyDescriptor}, ` +
       `classifier=${config.classifier.mode}, ` +
-      `classifier=${config.models.classifier.provider}/${config.models.classifier.model}, ` +
+      `newSessionTier=${newSessionTier}, ` +
+      `classifierModel=${config.models.classifier.provider}/${config.models.classifier.model}, ` +
       `edge=${config.models.edge.provider}/${config.models.edge.model}, ` +
       `cloud=${config.models.cloud.provider}/${config.models.cloud.model}` +
       (effectiveEdgeMaxContextTokens != null
@@ -384,12 +412,19 @@ const hybridGatewayPlugin = {
           edgeMaxContextTokens: edgeMax,
         });
 
-      // /new or /reset startup → force cloud for this request
+      // /new or /reset startup → force the configured tier for this request
       if (prompt?.includes("A new session was started via /new or /reset")) {
-        const cloud = config.models.cloud;
-        log.info(`[hybrid-gw] force-cloud (new session startup) -> ${cloud.provider}/${cloud.model}`);
-        setLastDecision({ tier: "cloud", provider: cloud.provider, model: cloud.model, reason: "force-cloud (new session startup)", ts: Date.now() });
-        return { providerOverride: cloud.provider, modelOverride: cloud.model };
+        const target = config.models[newSessionTier];
+        const reason = `force-${newSessionTier} (new session startup)`;
+        log.info(`[hybrid-gw] ${reason} -> ${target.provider}/${target.model}`);
+        setLastDecision({
+          tier: newSessionTier,
+          provider: target.provider,
+          model: target.model,
+          reason,
+          ts: Date.now(),
+        });
+        return { providerOverride: target.provider, modelOverride: target.model };
       }
 
       // Session estimate already at/above payload escalation threshold → cloud (skip classifier)

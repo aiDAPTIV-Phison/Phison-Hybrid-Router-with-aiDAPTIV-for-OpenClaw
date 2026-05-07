@@ -111,10 +111,11 @@
                 "reason": "Image generation requires cloud model with multimodal capabilities"
               }
             ],
-            "fallbackEnabled": true
+            "fallbackEnabled": true,
+            "newSessionTier": "cloud"
           },
           "models": {
-            "gateway": {
+            "classifier": {
               "provider": "llamacpp",
               "model": "qwen2.5-3b-instruct-q4_k_m"
             },

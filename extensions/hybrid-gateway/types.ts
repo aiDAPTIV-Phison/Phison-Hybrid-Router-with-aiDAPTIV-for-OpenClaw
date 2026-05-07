@@ -121,6 +121,11 @@ export type HybridGatewayConfig = {
     edgeMaxContextTokens?: number;
     /** Reserved tokens for the current turn (system prompt, tools, new user text). Default 8192. */
     contextReserveTokens?: number;
+    /**
+     * Tier to force when a /new or /reset session-startup prompt is detected.
+     * Defaults to `"cloud"`. Use `"classifier"`, `"edge"`, or `"cloud"` (legacy config may use `"gateway"` for the classifier slot).
+     */
+    newSessionTier?: Tier;
   };
   models: {
     classifier: TierModelMapping;
