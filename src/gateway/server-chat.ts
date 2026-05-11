@@ -122,6 +122,12 @@ function resolveMergedAssistantText(params: {
       return previousText;
     }
   }
+  // When callers send cumulative `text` plus a short trailing `delta` (e.g. final punctuation),
+  // prefer `text` — otherwise appendUniqueSuffix(previous, delta) drops the full reply if
+  // previousText was briefly out of sync with the cumulative snapshot.
+  if (nextDelta && nextText && nextText.length > previousText.length) {
+    return nextText;
+  }
   if (nextDelta) {
     return appendUniqueSuffix(previousText, nextDelta);
   }
@@ -321,7 +327,8 @@ export type AgentEventHandlerOptions = {
     opts?: { dropIfSlow?: boolean },
   ) => void;
   nodeSendToSession: NodeSendToSession;
-  agentRunSeq: Map<string, number>;
+  /** Seq tracker for agent bus events only (must not share `agentRunSeq` used by chat broadcasts). */
+  agentBusSeq: Map<string, number>;
   chatRunState: ChatRunState;
   resolveSessionKeyForRun: (runId: string) => string | undefined;
   clearAgentRunContext: (runId: string) => void;
@@ -332,7 +339,7 @@ export function createAgentEventHandler({
   broadcast,
   broadcastToConnIds,
   nodeSendToSession,
-  agentRunSeq,
+  agentBusSeq,
   chatRunState,
   resolveSessionKeyForRun,
   clearAgentRunContext,
@@ -539,7 +546,7 @@ export function createAgentEventHandler({
       chatRunState.abortedRuns.has(clientRunId) || chatRunState.abortedRuns.has(evt.runId);
     // Include sessionKey so Control UI can filter tool streams per session.
     const agentPayload = sessionKey ? { ...eventForClients, sessionKey } : eventForClients;
-    const last = agentRunSeq.get(evt.runId) ?? 0;
+    const lastBusSeq = agentBusSeq.get(evt.runId);
     const isToolEvent = evt.stream === "tool";
     const toolVerbose = isToolEvent ? resolveToolVerboseLevel(evt.runId, sessionKey) : "off";
     // Build tool payload: strip result/partialResult unless verbose=full
@@ -554,7 +561,7 @@ export function createAgentEventHandler({
               : { ...eventForClients, data };
           })()
         : agentPayload;
-    if (evt.seq !== last + 1) {
+    if (lastBusSeq !== undefined && evt.seq !== lastBusSeq + 1) {
       broadcast("agent", {
         runId: eventRunId,
         stream: "error",
@@ -562,12 +569,12 @@ export function createAgentEventHandler({
         sessionKey,
         data: {
           reason: "seq gap",
-          expected: last + 1,
+          expected: lastBusSeq + 1,
           received: evt.seq,
         },
       });
     }
-    agentRunSeq.set(evt.runId, evt.seq);
+    agentBusSeq.set(evt.runId, evt.seq);
     if (isToolEvent) {
       const toolPhase = typeof evt.data?.phase === "string" ? evt.data.phase : "";
       // Flush pending assistant text before tool-start events so clients can
@@ -641,8 +648,8 @@ export function createAgentEventHandler({
     if (lifecyclePhase === "end" || lifecyclePhase === "error") {
       toolEventRecipients.markFinal(evt.runId);
       clearAgentRunContext(evt.runId);
-      agentRunSeq.delete(evt.runId);
-      agentRunSeq.delete(clientRunId);
+      agentBusSeq.delete(evt.runId);
+      agentBusSeq.delete(clientRunId);
     }
   };
 }

@@ -40,6 +40,7 @@ function resetChatStateForSessionSwitch(state: AppViewState, sessionKey: string)
   state.chatStream = null;
   (state as unknown as OpenClawApp).chatStreamStartedAt = null;
   state.chatRunId = null;
+  (state as unknown as OpenClawApp).pendingOptimisticUserMerge = null;
   (state as unknown as OpenClawApp).resetToolStream();
   (state as unknown as OpenClawApp).resetChatScroll();
   state.applySettings({
@@ -295,6 +296,7 @@ function switchChatSession(state: AppViewState, nextSessionKey: string) {
   (state as unknown as { chatQueue: unknown[] }).chatQueue = [];
   (state as unknown as OpenClawApp).chatStreamStartedAt = null;
   state.chatRunId = null;
+  (state as unknown as OpenClawApp).pendingOptimisticUserMerge = null;
   (state as unknown as OpenClawApp).resetToolStream();
   (state as unknown as OpenClawApp).resetChatScroll();
   state.applySettings({

@@ -19,6 +19,7 @@ export type CompactionIndicatorStatus = {
   active: boolean;
   startedAt: number | null;
   completedAt: number | null;
+  error?: string;
 };
 
 export type ChatProps = {
@@ -79,6 +80,14 @@ function adjustTextareaHeight(el: HTMLTextAreaElement) {
 
 function renderCompactionIndicator(status: CompactionIndicatorStatus | null | undefined) {
   if (!status) return nothing;
+
+  if (status.error) {
+    return html`
+      <div class="callout warning compaction-indicator compaction-indicator--error">
+        ${status.error}
+      </div>
+    `;
+  }
 
   // Show "compacting..." while active
   if (status.active) {

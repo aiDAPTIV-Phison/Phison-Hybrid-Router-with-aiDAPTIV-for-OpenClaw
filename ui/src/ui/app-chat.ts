@@ -317,6 +317,7 @@ async function clearChatHistory(host: ChatHost) {
     host.chatMessages = [];
     host.chatStream = null;
     host.chatRunId = null;
+    (host as unknown as { pendingOptimisticUserMerge: null }).pendingOptimisticUserMerge = null;
     await loadChatHistory(host as unknown as OpenClawApp);
   } catch (err) {
     host.lastError = String(err);

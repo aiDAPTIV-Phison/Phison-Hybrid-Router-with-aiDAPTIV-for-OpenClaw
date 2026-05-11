@@ -340,6 +340,7 @@ export async function handleToolExecutionStart(
   const shouldEmitToolEvents = ctx.shouldEmitToolResult();
   emitAgentEvent({
     runId: ctx.params.runId,
+    ...(ctx.params.sessionKey ? { sessionKey: ctx.params.sessionKey } : {}),
     stream: "tool",
     data: {
       phase: "start",
@@ -401,6 +402,7 @@ export function handleToolExecutionUpdate(
   const sanitized = sanitizeToolResult(partial);
   emitAgentEvent({
     runId: ctx.params.runId,
+    ...(ctx.params.sessionKey ? { sessionKey: ctx.params.sessionKey } : {}),
     stream: "tool",
     data: {
       phase: "update",
@@ -520,6 +522,7 @@ export async function handleToolExecutionEnd(
 
   emitAgentEvent({
     runId: ctx.params.runId,
+    ...(ctx.params.sessionKey ? { sessionKey: ctx.params.sessionKey } : {}),
     stream: "tool",
     data: {
       phase: "result",

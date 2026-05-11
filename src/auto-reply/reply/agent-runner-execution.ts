@@ -324,6 +324,7 @@ export async function runAgentTurnWithFallback(params: {
             reasoningLevelOverride: params.opts?.reasoningLevel,
           });
           return (async () => {
+            const activeEntry = params.getActiveSessionEntry();
             const result = await runEmbeddedPiAgent({
               ...embeddedContext,
               trigger: params.isHeartbeat ? "heartbeat" : "user",
@@ -333,6 +334,8 @@ export async function runAgentTurnWithFallback(params: {
               groupSpace: params.sessionCtx.GroupSpace?.trim() ?? undefined,
               ...senderContext,
               ...runBaseParams,
+              approximateContextTokens: activeEntry?.totalTokens,
+              contextTokensFresh: activeEntry?.totalTokensFresh,
               prompt: params.commandBody,
               extraSystemPrompt: params.followupRun.run.extraSystemPrompt,
               toolResultFormat: (() => {
@@ -402,8 +405,14 @@ export async function runAgentTurnWithFallback(params: {
                     await params.opts?.onCompactionStart?.();
                   }
                   if (phase === "end") {
-                    autoCompactionCompleted = true;
-                    await params.opts?.onCompactionEnd?.();
+                    const willRetry = Boolean(evt.data.willRetry);
+                    const timedOut = Boolean(evt.data.timedOut);
+                    if (!willRetry) {
+                      if (!timedOut) {
+                        autoCompactionCompleted = true;
+                      }
+                      await params.opts?.onCompactionEnd?.();
+                    }
                   }
                 }
               },

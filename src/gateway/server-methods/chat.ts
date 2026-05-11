@@ -1359,23 +1359,26 @@ export const chatHandlers: GatewayRequestHandlers = {
         channel: INTERNAL_MESSAGE_CHANNEL,
       });
 
-      let routingBroadcasted = false;
+      /** Dedup only when tier/model unchanged (allows edge → cloud mid-run). */
+      let lastBroadcastHybridGwRoutingKey: string | undefined;
       const tryBroadcastRouting = (source: string) => {
-        if (routingBroadcasted) return;
         const decision = consumeLastHybridGatewayDecision();
-        if (decision) {
-          routingBroadcasted = true;
-          context.logGateway.info(
-            `[hybrid-gw] broadcasting routing event (source=${source}): ${decision.tier} -> ${decision.provider}/${decision.model}`,
-          );
-          broadcastChatRoutingInfo({
-            context,
-            runId: clientRunId,
-            sessionKey: rawSessionKey,
-            routingTier: decision.tier === "gateway" ? "edge" : decision.tier,
-            routingModel: `${decision.provider}/${decision.model}`,
-          });
-        }
+        if (!decision) return;
+        const routingModel = `${decision.provider}/${decision.model}`;
+        const routingTier = decision.tier === "classifier" ? "edge" : decision.tier;
+        const key = `${routingTier}:${routingModel}`;
+        if (lastBroadcastHybridGwRoutingKey === key) return;
+        lastBroadcastHybridGwRoutingKey = key;
+        context.logGateway.info(
+          `[hybrid-gw] broadcasting routing event (source=${source}): ${decision.tier} -> ${decision.provider}/${decision.model}`,
+        );
+        broadcastChatRoutingInfo({
+          context,
+          runId: clientRunId,
+          sessionKey: rawSessionKey,
+          routingTier,
+          routingModel,
+        });
       };
 
       const onModelSelected: typeof rawOnModelSelected = (modelCtx) => {
@@ -1537,7 +1540,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       const ROUTING_POLL_INTERVAL_MS = 50;
       const ROUTING_POLL_MAX_MS = 10_000;
       const routingEarlyPollId = setInterval(() => {
-        if (routingBroadcasted) {
+        if (lastBroadcastHybridGwRoutingKey !== undefined) {
           clearInterval(routingEarlyPollId);
           return;
         }

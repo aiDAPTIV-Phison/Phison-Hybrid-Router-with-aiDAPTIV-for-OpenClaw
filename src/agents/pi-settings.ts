@@ -1,5 +1,13 @@
 import type { OpenClawConfig } from "../config/config.js";
 import type { ContextEngineInfo } from "../context-engine/types.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
+import {
+  getHybridGatewayCompactionReserveTokens,
+  getHybridGatewayEdgeMaxContextTokens,
+} from "./hybrid-gateway-cloud-fallback.js";
+import { resolvePayloadEscalationThreshold } from "./hybrid-gateway-stream-guard.js";
+
+const log = createSubsystemLogger("pi-settings");
 
 export const DEFAULT_PI_COMPACTION_RESERVE_TOKENS_FLOOR = 20_000;
 
@@ -69,11 +77,28 @@ export function applyPiCompactionSettingsFromConfig(params: {
   const configuredReserveTokens = toNonNegativeInt(compactionCfg?.reserveTokens);
   const configuredKeepRecentTokens = toPositiveInt(compactionCfg?.keepRecentTokens);
   const reserveTokensFloor = resolveCompactionReserveTokensFloor(params.cfg);
+  const hybridCompactionReserve = getHybridGatewayCompactionReserveTokens();
+  const hybridEdgeMax = getHybridGatewayEdgeMaxContextTokens();
 
-  const targetReserveTokens = Math.max(
-    configuredReserveTokens ?? currentReserveTokens,
-    reserveTokensFloor,
-  );
+  let targetReserveTokens: number;
+  if (configuredReserveTokens !== undefined) {
+    targetReserveTokens = Math.max(configuredReserveTokens, reserveTokensFloor);
+  } else if (hybridEdgeMax != null) {
+    const { escalationThresholdTokens } = resolvePayloadEscalationThreshold(hybridEdgeMax);
+    targetReserveTokens = Math.max(0, hybridEdgeMax - escalationThresholdTokens);
+    log.info(
+      `Pi compaction reserveTokens=${targetReserveTokens} aligned with hybrid-gateway escalationThresholdTokens ` +
+        `(edgeMax=${hybridEdgeMax} escalationThresholdTokens=${escalationThresholdTokens}; reserveTokensFloor=${reserveTokensFloor} skipped)`,
+    );
+  } else if (hybridCompactionReserve !== undefined) {
+    targetReserveTokens = hybridCompactionReserve;
+    log.info(
+      `Pi compaction reserveTokens=${hybridCompactionReserve} from hybrid-gateway routing.contextReserveTokens ` +
+        `(reserveTokensFloor=${reserveTokensFloor} skipped; edgeMax unset — cannot align to escalation threshold)`,
+    );
+  } else {
+    targetReserveTokens = Math.max(currentReserveTokens, reserveTokensFloor);
+  }
   const targetKeepRecentTokens = configuredKeepRecentTokens ?? currentKeepRecentTokens;
 
   const overrides: { reserveTokens?: number; keepRecentTokens?: number } = {};

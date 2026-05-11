@@ -5,11 +5,13 @@ import type { EmbeddedPiSubscribeContext } from "./pi-embedded-subscribe.handler
 import { makeZeroUsageSnapshot } from "./usage.js";
 
 export function handleAutoCompactionStart(ctx: EmbeddedPiSubscribeContext) {
+  ctx.state.compactionRetryAggregateTimedOut = false;
   ctx.state.compactionInFlight = true;
   ctx.ensureCompactionPromise();
   ctx.log.debug(`embedded run compaction start: runId=${ctx.params.runId}`);
   emitAgentEvent({
     runId: ctx.params.runId,
+    ...(ctx.params.sessionKey ? { sessionKey: ctx.params.sessionKey } : {}),
     stream: "compaction",
     data: { phase: "start" },
   });
@@ -63,6 +65,7 @@ export function handleAutoCompactionEnd(
   }
   emitAgentEvent({
     runId: ctx.params.runId,
+    ...(ctx.params.sessionKey ? { sessionKey: ctx.params.sessionKey } : {}),
     stream: "compaction",
     data: { phase: "end", willRetry },
   });

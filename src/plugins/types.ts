@@ -513,6 +513,16 @@ export type PluginHookAgentContext = {
 export type PluginHookBeforeModelResolveEvent = {
   /** User prompt for this run. No session messages are available yet in this phase. */
   prompt: string;
+  /**
+   * Best-effort prior context size (e.g. session totalTokens) for routing before the
+   * full LLM payload exists. Used by plugins to force larger-context models when near limits.
+   */
+  approximateContextTokens?: number;
+  /**
+   * When false or omitted, `approximateContextTokens` may be stale; plugins should treat
+   * estimates conservatively (e.g. extra reserve).
+   */
+  contextTokensFresh?: boolean;
 };
 
 export type PluginHookBeforeModelResolveResult = {
@@ -565,6 +575,8 @@ export type PluginHookBeforeAgentStartEvent = {
   prompt: string;
   /** Optional because legacy hook can run in pre-session phase. */
   messages?: unknown[];
+  approximateContextTokens?: number;
+  contextTokensFresh?: boolean;
 };
 
 export type PluginHookBeforeAgentStartResult = PluginHookBeforePromptBuildResult &

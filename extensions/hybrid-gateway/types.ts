@@ -22,7 +22,7 @@ export type Skill =
   | "summarization"
   | "reasoning";
 
-export type Tier = "gateway" | "edge" | "cloud";
+export type Tier = "classifier" | "edge" | "cloud";
 
 export type RoutingPolicy =
   | "edge-first"
@@ -63,6 +63,12 @@ export type SkillRoute = {
 export type TierModelMapping = {
   provider: string;
   model: string;
+  /**
+   * Hard cap on context tokens for this tier when routing / overflow checks cannot rely on the
+   * OpenClaw catalog alone (e.g. llama.cpp `n_ctx` is 18432 but `models.json` still lists 200k).
+   * Applied after `resolveContextWindowInfo` as `min(effectiveFromRegistry, contextWindow)`.
+   */
+  contextWindow?: number;
 };
 
 // --- Plugin config (matches openclaw plugin config section) ---
@@ -92,19 +98,37 @@ export type HybridGatewayConfig = {
   };
   routing: {
     policy: RoutingPolicy;
+    /**
+     * Optional override for `policy`. If provided, this 5-item Tier array is used as a direct
+     * complexity → tier lookup table (index 0-4 = trivial, simple, moderate, complex, expert).
+     * Each item must be one of "classifier" | "edge" | "cloud".
+     *
+     * When valid and present, `policy` is ignored. When invalid, an error is logged and the
+     * gateway falls back to `policy`.
+     *
+     * Source key in plugin config can be either `policy-array` (kebab-case) or `policyArray`.
+     */
+    policyArray?: Tier[];
     skillRoutes: SkillRoute[];
     fallbackEnabled: boolean;
     /** Regex patterns (case-insensitive). Prompts matching any pattern bypass routing override. */
     bypassPatterns?: string[];
     /**
+     * When set (tokens), overrides the auto-detected edge context budget (see below).
+     * If omitted, OpenClaw uses the registered Edge model effective context window
+     * (`models.json` / provider entry, then `agents.defaults.contextTokens` cap), same as the main agent.
+     */
+    edgeMaxContextTokens?: number;
+    /** Reserved tokens for the current turn (system prompt, tools, new user text). Default 8192. */
+    contextReserveTokens?: number;
+    /**
      * Tier to force when a /new or /reset session-startup prompt is detected.
-     * Defaults to "cloud". Set to any configured tier (gateway / edge / cloud)
-     * to override.
+     * Defaults to `"cloud"`. Use `"classifier"`, `"edge"`, or `"cloud"` (legacy config may use `"gateway"` for the classifier slot).
      */
     newSessionTier?: Tier;
   };
   models: {
-    gateway: TierModelMapping;
+    classifier: TierModelMapping;
     edge: TierModelMapping;
     cloud: TierModelMapping;
   };

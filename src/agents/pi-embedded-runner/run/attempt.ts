@@ -16,6 +16,7 @@ import {
   ensureGlobalUndiciStreamTimeouts,
 } from "../../../infra/net/undici-global-dispatcher.js";
 import { MAX_IMAGE_BYTES } from "../../../media/constants.js";
+import { emitAgentEvent } from "../../../infra/agent-events.js";
 import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
 import type {
   PluginHookAgentContext,
@@ -72,6 +73,14 @@ import { applyPiAutoCompactionGuard } from "../../pi-settings.js";
 import { toClientToolDefinitions } from "../../pi-tool-definition-adapter.js";
 import { createOpenClawCodingTools, resolveToolLoopDetectionConfig } from "../../pi-tools.js";
 import { resolveSandboxContext } from "../../sandbox.js";
+import {
+  HybridGatewayPayloadTooLargeForEdgeError,
+  stripTrailingHybridGatewayPayloadEscalationAssistant,
+} from "../../hybrid-gateway-cloud-fallback.js";
+import {
+  takeHybridGatewayPayloadEscalationPending,
+  wrapStreamFnHybridGatewayEdgePayloadGuard,
+} from "../../hybrid-gateway-stream-guard.js";
 import { resolveSandboxRuntimeStatus } from "../../sandbox/runtime-status.js";
 import { isXaiProvider } from "../../schema/clean-for-xai.js";
 import { repairSessionFileIfNeeded } from "../../session-file-repair.js";
@@ -2059,6 +2068,12 @@ export async function runEmbeddedAttempt(
         );
       }
 
+      activeSession.agent.streamFn = wrapStreamFnHybridGatewayEdgePayloadGuard({
+        baseFn: activeSession.agent.streamFn,
+        attemptProvider: params.provider,
+        attemptModelId: params.modelId,
+      });
+
       try {
         const prior = await sanitizeSessionHistory({
           messages: activeSession.messages,
@@ -2213,6 +2228,7 @@ export async function runEmbeddedAttempt(
         assistantTexts,
         toolMetas,
         unsubscribe,
+        noteCompactionRetryAggregateTimeout,
         waitForCompactionRetry,
         isCompactionInFlight,
         getMessagingToolSentTexts,
@@ -2305,160 +2321,191 @@ export async function runEmbeddedAttempt(
       try {
         const promptStartedAt = Date.now();
 
-        // Run before_prompt_build hooks to allow plugins to inject prompt context.
-        // Legacy compatibility: before_agent_start is also checked for context fields.
         let effectivePrompt = params.prompt;
-        const hookCtx = {
-          agentId: hookAgentId,
-          sessionKey: params.sessionKey,
-          sessionId: params.sessionId,
-          workspaceDir: params.workspaceDir,
-          messageProvider: params.messageProvider ?? undefined,
-          trigger: params.trigger,
-          channelId: params.messageChannel ?? params.messageProvider ?? undefined,
-        };
-        const hookResult = await resolvePromptBuildHookResult({
-          prompt: params.prompt,
-          messages: activeSession.messages,
-          hookCtx,
-          hookRunner,
-          legacyBeforeAgentStartResult: params.legacyBeforeAgentStartResult,
-        });
-        {
-          if (hookResult?.prependContext) {
-            effectivePrompt = `${hookResult.prependContext}\n\n${params.prompt}`;
-            log.debug(
-              `hooks: prepended context to prompt (${hookResult.prependContext.length} chars)`,
-            );
-          }
-          const legacySystemPrompt =
-            typeof hookResult?.systemPrompt === "string" ? hookResult.systemPrompt.trim() : "";
-          if (legacySystemPrompt) {
-            applySystemPromptOverrideToSession(activeSession, legacySystemPrompt);
-            systemPromptText = legacySystemPrompt;
-            log.debug(`hooks: applied systemPrompt override (${legacySystemPrompt.length} chars)`);
-          }
-          const prependedOrAppendedSystemPrompt = composeSystemPromptWithHookContext({
-            baseSystemPrompt: systemPromptText,
-            prependSystemContext: hookResult?.prependSystemContext,
-            appendSystemContext: hookResult?.appendSystemContext,
+        if (!params.resumeAfterHybridGatewayPayloadEscalation) {
+          // Run before_prompt_build hooks to allow plugins to inject prompt context.
+          // Legacy compatibility: before_agent_start is also checked for context fields.
+          const hookCtx = {
+            agentId: hookAgentId,
+            sessionKey: params.sessionKey,
+            sessionId: params.sessionId,
+            workspaceDir: params.workspaceDir,
+            messageProvider: params.messageProvider ?? undefined,
+            trigger: params.trigger,
+            channelId: params.messageChannel ?? params.messageProvider ?? undefined,
+          };
+          const hookResult = await resolvePromptBuildHookResult({
+            prompt: params.prompt,
+            messages: activeSession.messages,
+            hookCtx,
+            hookRunner,
+            legacyBeforeAgentStartResult: params.legacyBeforeAgentStartResult,
           });
-          if (prependedOrAppendedSystemPrompt) {
-            const prependSystemLen = hookResult?.prependSystemContext?.trim().length ?? 0;
-            const appendSystemLen = hookResult?.appendSystemContext?.trim().length ?? 0;
-            applySystemPromptOverrideToSession(activeSession, prependedOrAppendedSystemPrompt);
-            systemPromptText = prependedOrAppendedSystemPrompt;
-            log.debug(
-              `hooks: applied prependSystemContext/appendSystemContext (${prependSystemLen}+${appendSystemLen} chars)`,
-            );
+          {
+            if (hookResult?.prependContext) {
+              effectivePrompt = `${hookResult.prependContext}\n\n${params.prompt}`;
+              log.debug(
+                `hooks: prepended context to prompt (${hookResult.prependContext.length} chars)`,
+              );
+            }
+            const legacySystemPrompt =
+              typeof hookResult?.systemPrompt === "string" ? hookResult.systemPrompt.trim() : "";
+            if (legacySystemPrompt) {
+              applySystemPromptOverrideToSession(activeSession, legacySystemPrompt);
+              systemPromptText = legacySystemPrompt;
+              log.debug(`hooks: applied systemPrompt override (${legacySystemPrompt.length} chars)`);
+            }
+            const prependedOrAppendedSystemPrompt = composeSystemPromptWithHookContext({
+              baseSystemPrompt: systemPromptText,
+              prependSystemContext: hookResult?.prependSystemContext,
+              appendSystemContext: hookResult?.appendSystemContext,
+            });
+            if (prependedOrAppendedSystemPrompt) {
+              const prependSystemLen = hookResult?.prependSystemContext?.trim().length ?? 0;
+              const appendSystemLen = hookResult?.appendSystemContext?.trim().length ?? 0;
+              applySystemPromptOverrideToSession(activeSession, prependedOrAppendedSystemPrompt);
+              systemPromptText = prependedOrAppendedSystemPrompt;
+              log.debug(
+                `hooks: applied prependSystemContext/appendSystemContext (${prependSystemLen}+${appendSystemLen} chars)`,
+              );
+            }
           }
-        }
-
-        log.debug(`embedded run prompt start: runId=${params.runId} sessionId=${params.sessionId}`);
-        cacheTrace?.recordStage("prompt:before", {
-          prompt: effectivePrompt,
-          messages: activeSession.messages,
-        });
-
-        // Repair orphaned trailing user messages so new prompts don't violate role ordering.
-        const leafEntry = sessionManager.getLeafEntry();
-        if (leafEntry?.type === "message" && leafEntry.message.role === "user") {
-          if (leafEntry.parentId) {
-            sessionManager.branch(leafEntry.parentId);
-          } else {
-            sessionManager.resetLeaf();
-          }
-          const sessionContext = sessionManager.buildSessionContext();
-          activeSession.agent.replaceMessages(sessionContext.messages);
-          log.warn(
-            `Removed orphaned user message to prevent consecutive user turns. ` +
-              `runId=${params.runId} sessionId=${params.sessionId}`,
+        } else {
+          log.debug(
+            `embedded run: skipping prompt-build hooks (hybrid-gw payload cloud resume) runId=${params.runId} sessionId=${params.sessionId}`,
           );
         }
 
-        try {
-          // Idempotent cleanup for legacy sessions with persisted image payloads.
-          // Called each run; only mutates already-answered user turns that still carry image blocks.
-          const didPruneImages = pruneProcessedHistoryImages(activeSession.messages);
-          if (didPruneImages) {
-            activeSession.agent.replaceMessages(activeSession.messages);
-          }
-
-          // Detect and load images referenced in the prompt for vision-capable models.
-          // Images are prompt-local only (pi-like behavior).
-          const imageResult = await detectAndLoadPromptImages({
-            prompt: effectivePrompt,
-            workspaceDir: effectiveWorkspace,
-            model: params.model,
-            existingImages: params.images,
-            maxBytes: MAX_IMAGE_BYTES,
-            maxDimensionPx: resolveImageSanitizationLimits(params.config).maxDimensionPx,
-            workspaceOnly: effectiveFsWorkspaceOnly,
-            // Enforce sandbox path restrictions when sandbox is enabled
-            sandbox:
-              sandbox?.enabled && sandbox?.fsBridge
-                ? { root: sandbox.workspaceDir, bridge: sandbox.fsBridge }
-                : undefined,
-          });
-
-          cacheTrace?.recordStage("prompt:images", {
+        log.debug(`embedded run prompt start: runId=${params.runId} sessionId=${params.sessionId}`);
+        if (!params.resumeAfterHybridGatewayPayloadEscalation) {
+          cacheTrace?.recordStage("prompt:before", {
             prompt: effectivePrompt,
             messages: activeSession.messages,
-            note: `images: prompt=${imageResult.images.length}`,
           });
+        } else {
+          cacheTrace?.recordStage("prompt:hybrid_gw_cloud_resume", {
+            prompt: params.prompt,
+            messages: activeSession.messages,
+          });
+        }
 
-          // Diagnostic: log context sizes before prompt to help debug early overflow errors.
-          if (log.isEnabled("debug")) {
-            const msgCount = activeSession.messages.length;
-            const systemLen = systemPromptText?.length ?? 0;
-            const promptLen = effectivePrompt.length;
-            const sessionSummary = summarizeSessionContext(activeSession.messages);
-            log.debug(
-              `[context-diag] pre-prompt: sessionKey=${params.sessionKey ?? params.sessionId} ` +
-                `messages=${msgCount} roleCounts=${sessionSummary.roleCounts} ` +
-                `historyTextChars=${sessionSummary.totalTextChars} ` +
-                `maxMessageTextChars=${sessionSummary.maxMessageTextChars} ` +
-                `historyImageBlocks=${sessionSummary.totalImageBlocks} ` +
-                `systemPromptChars=${systemLen} promptChars=${promptLen} ` +
-                `promptImages=${imageResult.images.length} ` +
-                `provider=${params.provider}/${params.modelId} sessionFile=${params.sessionFile}`,
+        if (!params.resumeAfterHybridGatewayPayloadEscalation) {
+          // Repair orphaned trailing user messages so new prompts don't violate role ordering.
+          const leafEntry = sessionManager.getLeafEntry();
+          if (leafEntry?.type === "message" && leafEntry.message.role === "user") {
+            if (leafEntry.parentId) {
+              sessionManager.branch(leafEntry.parentId);
+            } else {
+              sessionManager.resetLeaf();
+            }
+            const sessionContext = sessionManager.buildSessionContext();
+            activeSession.agent.replaceMessages(sessionContext.messages);
+            log.warn(
+              `Removed orphaned user message to prevent consecutive user turns. ` +
+                `runId=${params.runId} sessionId=${params.sessionId}`,
             );
           }
+        }
 
-          if (hookRunner?.hasHooks("llm_input")) {
-            hookRunner
-              .runLlmInput(
-                {
-                  runId: params.runId,
-                  sessionId: params.sessionId,
-                  provider: params.provider,
-                  model: params.modelId,
-                  systemPrompt: systemPromptText,
-                  prompt: effectivePrompt,
-                  historyMessages: activeSession.messages,
-                  imagesCount: imageResult.images.length,
-                },
-                {
-                  agentId: hookAgentId,
-                  sessionKey: params.sessionKey,
-                  sessionId: params.sessionId,
-                  workspaceDir: params.workspaceDir,
-                  messageProvider: params.messageProvider ?? undefined,
-                  trigger: params.trigger,
-                  channelId: params.messageChannel ?? params.messageProvider ?? undefined,
-                },
-              )
-              .catch((err) => {
-                log.warn(`llm_input hook failed: ${String(err)}`);
-              });
-          }
-
-          // Only pass images option if there are actually images to pass
-          // This avoids potential issues with models that don't expect the images parameter
-          if (imageResult.images.length > 0) {
-            await abortable(activeSession.prompt(effectivePrompt, { images: imageResult.images }));
+        try {
+          if (params.resumeAfterHybridGatewayPayloadEscalation) {
+            const stripped = stripTrailingHybridGatewayPayloadEscalationAssistant(activeSession.messages);
+            if (stripped.length < activeSession.messages.length) {
+              activeSession.agent.replaceMessages(stripped);
+            } else {
+              log.warn(
+                `[hybrid-gw] payload cloud resume: expected trailing payload-guard assistant message missing ` +
+                  `(runId=${params.runId} sessionId=${params.sessionId}); duplicate user turn may occur`,
+              );
+            }
+            log.debug(
+              `[hybrid-gw] continuing agent on cloud after payload guard (runId=${params.runId} sessionId=${params.sessionId})`,
+            );
+            await abortable(activeSession.agent.continue());
           } else {
-            await abortable(activeSession.prompt(effectivePrompt));
+            // Idempotent cleanup for legacy sessions with persisted image payloads.
+            // Called each run; only mutates already-answered user turns that still carry image blocks.
+            const didPruneImages = pruneProcessedHistoryImages(activeSession.messages);
+            if (didPruneImages) {
+              activeSession.agent.replaceMessages(activeSession.messages);
+            }
+
+            // Detect and load images referenced in the prompt for vision-capable models.
+            // Images are prompt-local only (pi-like behavior).
+            const imageResult = await detectAndLoadPromptImages({
+              prompt: effectivePrompt,
+              workspaceDir: effectiveWorkspace,
+              model: params.model,
+              existingImages: params.images,
+              maxBytes: MAX_IMAGE_BYTES,
+              maxDimensionPx: resolveImageSanitizationLimits(params.config).maxDimensionPx,
+              workspaceOnly: effectiveFsWorkspaceOnly,
+              // Enforce sandbox path restrictions when sandbox is enabled
+              sandbox:
+                sandbox?.enabled && sandbox?.fsBridge
+                  ? { root: sandbox.workspaceDir, bridge: sandbox.fsBridge }
+                  : undefined,
+            });
+
+            cacheTrace?.recordStage("prompt:images", {
+              prompt: effectivePrompt,
+              messages: activeSession.messages,
+              note: `images: prompt=${imageResult.images.length}`,
+            });
+
+            // Diagnostic: log context sizes before prompt to help debug early overflow errors.
+            if (log.isEnabled("debug")) {
+              const msgCount = activeSession.messages.length;
+              const systemLen = systemPromptText?.length ?? 0;
+              const promptLen = effectivePrompt.length;
+              const sessionSummary = summarizeSessionContext(activeSession.messages);
+              log.debug(
+                `[context-diag] pre-prompt: sessionKey=${params.sessionKey ?? params.sessionId} ` +
+                  `messages=${msgCount} roleCounts=${sessionSummary.roleCounts} ` +
+                  `historyTextChars=${sessionSummary.totalTextChars} ` +
+                  `maxMessageTextChars=${sessionSummary.maxMessageTextChars} ` +
+                  `historyImageBlocks=${sessionSummary.totalImageBlocks} ` +
+                  `systemPromptChars=${systemLen} promptChars=${promptLen} ` +
+                  `promptImages=${imageResult.images.length} ` +
+                  `provider=${params.provider}/${params.modelId} sessionFile=${params.sessionFile}`,
+              );
+            }
+
+            if (hookRunner?.hasHooks("llm_input")) {
+              hookRunner
+                .runLlmInput(
+                  {
+                    runId: params.runId,
+                    sessionId: params.sessionId,
+                    provider: params.provider,
+                    model: params.modelId,
+                    systemPrompt: systemPromptText,
+                    prompt: effectivePrompt,
+                    historyMessages: activeSession.messages,
+                    imagesCount: imageResult.images.length,
+                  },
+                  {
+                    agentId: hookAgentId,
+                    sessionKey: params.sessionKey,
+                    sessionId: params.sessionId,
+                    workspaceDir: params.workspaceDir,
+                    messageProvider: params.messageProvider ?? undefined,
+                    trigger: params.trigger,
+                    channelId: params.messageChannel ?? params.messageProvider ?? undefined,
+                  },
+                )
+                .catch((err) => {
+                  log.warn(`llm_input hook failed: ${String(err)}`);
+                });
+            }
+
+            // Only pass images option if there are actually images to pass
+            // This avoids potential issues with models that don't expect the images parameter
+            if (imageResult.images.length > 0) {
+              await abortable(activeSession.prompt(effectivePrompt, { images: imageResult.images }));
+            } else {
+              await abortable(activeSession.prompt(effectivePrompt));
+            }
           }
         } catch (err) {
           // Yield-triggered abort is intentional — treat as clean stop, not error.
@@ -2488,6 +2535,12 @@ export async function runEmbeddedAttempt(
           log.debug(
             `embedded run prompt end: runId=${params.runId} sessionId=${params.sessionId} durationMs=${Date.now() - promptStartedAt}`,
           );
+        }
+
+        const pendingPayloadEscalation = takeHybridGatewayPayloadEscalationPending();
+        if (!promptError && pendingPayloadEscalation) {
+          promptError = new HybridGatewayPayloadTooLargeForEdgeError(pendingPayloadEscalation);
+          promptErrorSource = "prompt";
         }
 
         // Capture snapshot before compaction wait so we have complete messages if timeout occurs
@@ -2522,6 +2575,17 @@ export async function runEmbeddedAttempt(
               });
           if (compactionRetryWait.timedOut) {
             timedOutDuringCompaction = true;
+            noteCompactionRetryAggregateTimeout();
+            emitAgentEvent({
+              runId: params.runId,
+              sessionKey: sandboxSessionKey,
+              stream: "compaction",
+              data: { phase: "end", willRetry: false, timedOut: true },
+            });
+            void params.onAgentEvent?.({
+              stream: "compaction",
+              data: { phase: "end", willRetry: false, timedOut: true },
+            });
             if (!isProbeSession) {
               log.warn(
                 `compaction retry aggregate timeout (${COMPACTION_RETRY_AGGREGATE_TIMEOUT_MS}ms): ` +

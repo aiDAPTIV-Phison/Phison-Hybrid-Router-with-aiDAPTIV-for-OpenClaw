@@ -14,7 +14,11 @@ import {
   handleWhatsAppStart as handleWhatsAppStartInternal,
   handleWhatsAppWait as handleWhatsAppWaitInternal,
 } from "./app-channels.ts";
-import type { ChatRoutingInfo, LastAppendedFinalMessage } from "./controllers/chat.ts";
+import type {
+  ChatRoutingInfo,
+  LastAppendedFinalMessage,
+  PendingOptimisticUserMerge,
+} from "./controllers/chat.ts";
 import {
   handleAbortChat as handleAbortChatInternal,
   handleSendChat as handleSendChatInternal,
@@ -158,6 +162,7 @@ export class OpenClawApp extends LitElement {
   @state() chatReasoningStream: string | null = null;
   @state() chatRoutingInfo: ChatRoutingInfo | null = null;
   @state() lastAppendedFinalMessage: LastAppendedFinalMessage | null = null;
+  @state() pendingOptimisticUserMerge: PendingOptimisticUserMerge | null = null;
   @state() compactionStatus: CompactionStatus | null = null;
   @state() fallbackStatus: FallbackStatus | null = null;
   @state() chatAvatarUrl: string | null = null;
