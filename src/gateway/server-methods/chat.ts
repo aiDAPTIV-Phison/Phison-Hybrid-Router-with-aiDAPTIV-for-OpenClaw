@@ -1365,7 +1365,7 @@ export const chatHandlers: GatewayRequestHandlers = {
         const decision = consumeLastHybridGatewayDecision();
         if (!decision) return;
         const routingModel = `${decision.provider}/${decision.model}`;
-        const routingTier = decision.tier === "gateway" ? "edge" : decision.tier;
+        const routingTier = decision.tier === "classifier" ? "edge" : decision.tier;
         const key = `${routingTier}:${routingModel}`;
         if (lastBroadcastHybridGwRoutingKey === key) return;
         lastBroadcastHybridGwRoutingKey = key;
