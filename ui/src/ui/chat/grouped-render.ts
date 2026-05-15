@@ -90,7 +90,7 @@ export function renderReadingIndicatorGroup(
   routingInfo?: ChatRoutingInfo | null,
 ) {
   const hasRouting = routingInfo?.model;
-  const tierLabel = routingInfo?.tier === "edge" ? "Edge" : "Cloud";
+  const tierLabel = routingInfo?.label ?? (routingInfo?.tier === "edge" ? "Edge" : "Cloud");
 
   return html`
     <div class="chat-group assistant">
@@ -116,7 +116,7 @@ function renderRoutingInfoBadge(routingInfo?: ChatRoutingInfo | null) {
   if (!routingInfo) return nothing;
   const isEdge = routingInfo.tier === "edge";
   const tierClass = isEdge ? "routing-tier--edge" : "routing-tier--cloud";
-  const label = isEdge ? "Edge" : "Cloud";
+  const label = routingInfo.label ?? (isEdge ? "Edge" : "Cloud");
   return html`
     <div class="chat-routing-info fade-in">
       <span class="routing-tier ${tierClass}">${label}</span>

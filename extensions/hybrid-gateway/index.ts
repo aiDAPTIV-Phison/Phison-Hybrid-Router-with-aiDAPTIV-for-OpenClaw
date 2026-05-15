@@ -8,6 +8,7 @@ import {
   HYBRID_GATEWAY_CLOUD_FALLBACK_KEY,
   setHybridGatewayCompactionReserveTokens,
   setHybridGatewayEdgeMaxContextTokens,
+  setHybridGatewayTierLabels,
 } from "../../src/agents/hybrid-gateway-cloud-fallback.js";
 import { resolveModel } from "../../src/agents/pi-embedded-runner/model.js";
 import { resolvePayloadEscalationThreshold } from "../../src/agents/hybrid-gateway-stream-guard.js";
@@ -42,7 +43,7 @@ type PluginApi = {
 
 // ---- Global routing-decision store (read by gateway chat handler) ----
 
-type StoredRoutingDecision = { tier: string; provider: string; model: string; reason: string; ts: number };
+type StoredRoutingDecision = { tier: string; provider: string; model: string; reason: string; label?: string; ts: number };
 const LAST_DECISION_KEY = "__hybridGatewayLastDecision";
 
 function setLastDecision(decision: StoredRoutingDecision) {
@@ -335,6 +336,7 @@ const hybridGatewayPlugin = {
     // resolveContextWindowInfo() is not capped by a previous plugin registration.
     setHybridGatewayEdgeMaxContextTokens(undefined);
     setHybridGatewayCompactionReserveTokens(undefined);
+    setHybridGatewayTierLabels(config.routing.tierLabels ?? {});
 
     const effectiveEdgeMaxContextTokens = resolveEffectiveEdgeMaxContextTokens({
       routing: config.routing,
@@ -422,6 +424,7 @@ const hybridGatewayPlugin = {
           provider: target.provider,
           model: target.model,
           reason,
+          label: config.routing.tierLabels?.[newSessionTier],
           ts: Date.now(),
         });
         return { providerOverride: target.provider, modelOverride: target.model };
@@ -440,6 +443,7 @@ const hybridGatewayPlugin = {
           provider: cloud.provider,
           model: cloud.model,
           reason: `edge-payload-escalation approx=${approxTokens} max=${edgeMax} escalationThreshold=${thr ?? "?"} reserve=${reserve}`,
+          label: config.routing.tierLabels?.cloud,
           ts: Date.now(),
         });
         return { providerOverride: cloud.provider, modelOverride: cloud.model };
@@ -485,6 +489,7 @@ const hybridGatewayPlugin = {
           provider: decision.provider,
           model: decision.model,
           reason: decision.reason,
+          label: config.routing.tierLabels?.[decision.tier],
           ts: Date.now(),
         });
 

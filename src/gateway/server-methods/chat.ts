@@ -939,7 +939,7 @@ function broadcastChatReasoning(params: {
   params.context.nodeSendToSession(params.sessionKey, "chat", payload);
 }
 
-type HybridGatewayDecision = { tier: string; provider: string; model: string; reason: string; ts: number };
+type HybridGatewayDecision = { tier: string; provider: string; model: string; reason: string; label?: string; ts: number };
 
 function consumeLastHybridGatewayDecision(): HybridGatewayDecision | undefined {
   const g = globalThis as Record<string, unknown>;
@@ -960,6 +960,7 @@ function broadcastChatRoutingInfo(params: {
   sessionKey: string;
   routingTier: string;
   routingModel: string;
+  routingLabel?: string;
 }) {
   const seq = nextChatSeq({ agentRunSeq: params.context.agentRunSeq }, params.runId);
   const payload = {
@@ -969,6 +970,7 @@ function broadcastChatRoutingInfo(params: {
     state: "routing" as const,
     routingTier: params.routingTier,
     routingModel: params.routingModel,
+    ...(params.routingLabel !== undefined && { routingLabel: params.routingLabel }),
   };
   params.context.broadcast("chat", payload, { forceSend: true });
   params.context.nodeSendToSession(params.sessionKey, "chat", payload);
@@ -1365,7 +1367,12 @@ export const chatHandlers: GatewayRequestHandlers = {
         const decision = consumeLastHybridGatewayDecision();
         if (!decision) return;
         const routingModel = `${decision.provider}/${decision.model}`;
+        // classifier tier is displayed as edge in the UI
         const routingTier = decision.tier === "classifier" ? "edge" : decision.tier;
+        // when classifier is mapped to edge, prefer classifier label then fall back to edge label
+        const routingLabel = decision.tier === "classifier"
+          ? (decision.label ?? undefined)
+          : decision.label;
         const key = `${routingTier}:${routingModel}`;
         if (lastBroadcastHybridGwRoutingKey === key) return;
         lastBroadcastHybridGwRoutingKey = key;
@@ -1378,6 +1385,7 @@ export const chatHandlers: GatewayRequestHandlers = {
           sessionKey: rawSessionKey,
           routingTier,
           routingModel,
+          routingLabel,
         });
       };
 
