@@ -46,6 +46,13 @@ type PluginApi = {
 type StoredRoutingDecision = { tier: string; provider: string; model: string; reason: string; label?: string; ts: number };
 const LAST_DECISION_KEY = "__hybridGatewayLastDecision";
 
+/** Returns the configured tier label, or undefined if absent/empty. */
+function resolveTierLabel(tierLabels: HybridGatewayConfig["routing"]["tierLabels"], tier: string): string | undefined {
+  if (!tierLabels) return undefined;
+  const v = (tierLabels as Record<string, unknown>)[tier];
+  return typeof v === "string" && v.trim() ? v.trim() : undefined;
+}
+
 function setLastDecision(decision: StoredRoutingDecision) {
   (globalThis as Record<string, unknown>)[LAST_DECISION_KEY] = decision;
 }
@@ -424,7 +431,7 @@ const hybridGatewayPlugin = {
           provider: target.provider,
           model: target.model,
           reason,
-          label: config.routing.tierLabels?.[newSessionTier],
+          label: resolveTierLabel(config.routing.tierLabels, newSessionTier),
           ts: Date.now(),
         });
         return { providerOverride: target.provider, modelOverride: target.model };
@@ -443,7 +450,7 @@ const hybridGatewayPlugin = {
           provider: cloud.provider,
           model: cloud.model,
           reason: `edge-payload-escalation approx=${approxTokens} max=${edgeMax} escalationThreshold=${thr ?? "?"} reserve=${reserve}`,
-          label: config.routing.tierLabels?.cloud,
+          label: resolveTierLabel(config.routing.tierLabels, "cloud"),
           ts: Date.now(),
         });
         return { providerOverride: cloud.provider, modelOverride: cloud.model };
@@ -489,7 +496,7 @@ const hybridGatewayPlugin = {
           provider: decision.provider,
           model: decision.model,
           reason: decision.reason,
-          label: config.routing.tierLabels?.[decision.tier],
+          label: resolveTierLabel(config.routing.tierLabels, decision.tier),
           ts: Date.now(),
         });
 
