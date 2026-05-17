@@ -20,6 +20,8 @@ export type PendingOptimisticUserMerge = {
 export type ChatRoutingInfo = {
   tier: string;
   model: string;
+  /** Custom display label from routing.tierLabels config. Falls back to "Edge"/"Cloud" when absent. */
+  label?: string;
 };
 
 export type ChatState = {
@@ -53,6 +55,7 @@ export type ChatEventPayload = {
   reasoningText?: string;
   routingTier?: string;
   routingModel?: string;
+  routingLabel?: string;
 };
 
 const LAST_APPENDED_FINAL_TTL_MS = 15_000;
@@ -296,6 +299,7 @@ export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
       state.chatRoutingInfo = {
         tier: payload.routingTier,
         model: payload.routingModel,
+        ...(payload.routingLabel !== undefined && { label: payload.routingLabel }),
       };
     }
     return payload.state;

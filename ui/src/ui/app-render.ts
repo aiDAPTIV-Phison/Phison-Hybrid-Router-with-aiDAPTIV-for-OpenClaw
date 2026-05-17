@@ -604,7 +604,9 @@ export function renderApp(state: AppViewState) {
                 ${isChat ? nothing : html`<div class="page-sub">${subtitleForTab(state.tab)}</div>`}
               </div>
               <div class="page-meta">
-                ${state.lastError ? html`<div class="pill danger">${state.lastError}</div>` : nothing}
+                ${state.lastError
+                  ? html`<div class=${state.lastError.includes("Hybrid gateway:") ? "pill info" : "pill danger"}>${state.lastError}</div>`
+                  : nothing}
                 ${isChat ? renderChatControls(state) : nothing}
               </div>
             </section>`

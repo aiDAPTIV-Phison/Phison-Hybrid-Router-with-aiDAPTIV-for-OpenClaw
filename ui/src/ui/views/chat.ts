@@ -268,7 +268,9 @@ export function renderChat(props: ChatProps) {
     <section class="card chat">
       ${props.disabledReason ? html`<div class="callout">${props.disabledReason}</div>` : nothing}
 
-      ${props.error ? html`<div class="callout danger">${props.error}</div>` : nothing}
+      ${props.error
+        ? html`<div class=${props.error.includes("Hybrid gateway:") ? "callout info" : "callout danger"}>${props.error}</div>`
+        : nothing}
 
       ${renderCompactionIndicator(props.compactionStatus)}
 
@@ -449,7 +451,7 @@ function renderStandaloneRoutingBanner(props: ChatProps) {
 
   const isEdge = ri.tier === "edge";
   const tierClass = isEdge ? "routing-tier--edge" : "routing-tier--cloud";
-  const label = isEdge ? "Edge" : "Cloud";
+  const label = ri.label || (isEdge ? "Edge" : "Cloud");
   return html`
     <div class="chat-routing-banner fade-in">
       <div class="chat-routing-info">
