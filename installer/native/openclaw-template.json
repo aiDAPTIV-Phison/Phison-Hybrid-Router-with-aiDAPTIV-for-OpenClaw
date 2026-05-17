@@ -113,6 +113,7 @@
           },
           "routing": {
             "policy": "cost-optimize-L2",
+            "edgeMaxContextTokens": 18432,
             "skillRoutes": [
               {
                 "skillPattern": "image-gen",
@@ -121,7 +122,12 @@
               }
             ],
             "fallbackEnabled": true,
-            "newSessionTier": "cloud"
+            "newSessionTier": "cloud",
+            "tierLabels": {
+                "classifier": "",
+                "edge":  "",
+                "cloud": ""
+            }
           },
           "models": {
             "gateway": {

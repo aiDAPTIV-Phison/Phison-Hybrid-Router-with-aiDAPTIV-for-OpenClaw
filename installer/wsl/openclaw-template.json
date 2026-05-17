@@ -123,7 +123,12 @@
               }
             ],
             "fallbackEnabled": true,
-            "newSessionTier": "cloud"
+            "newSessionTier": "cloud",
+            "tierLabels": {
+                "classifier": "",
+                "edge":  "",
+                "cloud": ""
+            }
           },
           "models": {
             "classifier": {
